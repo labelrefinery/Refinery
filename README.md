@@ -115,46 +115,64 @@ returns per sweep, so leaving it in measures the LiDAR rather than the labeler.
 
 ## The terrain stage, ablated
 
-Same binary, same scene, `--terrain on|off`:
+Same binary, same scene, four configurations:
 
-| | terrain off | terrain on | |
-| --- | --- | --- | --- |
-| TP | 1555 | **1555** | unchanged |
-| FP | 2189 | **1700** | −489 |
-| FN | 845 | **845** | unchanged |
-| precision | 0.415 | **0.478** | +15% |
-| recall | 0.648 | 0.648 | unchanged |
-| F1 | 0.506 | **0.550** | +8.7% |
-| ATE | 0.379 m | 0.365 m | |
+| | none | threshold | grow | **grow + step guard** |
+| --- | --- | --- | --- | --- |
+| TP | 1555 | 1555 | 1542 | **1552** |
+| FP | 2189 | 1700 | 782 | **824** |
+| precision | 0.415 | 0.478 | 0.664 | **0.653** |
+| recall | 0.648 | 0.648 | 0.643 | **0.647** |
+| F1 | 0.506 | 0.550 | 0.653 | **0.650** |
+| ATE | 0.379 m | 0.365 m | 0.445 m | **0.365 m** |
+| ASE | 0.575 | 0.577 | 0.705 | **0.576** |
 
-**Identical TP and FN is the result worth having**: the terrain stage removed
-489 false positives and cost exactly zero true positives, so it is only
-removing things that were never objects.
+The shipped configuration is the last: **62% fewer false positives than the
+baseline, three true positives lost out of 1555, and box quality unchanged.**
+Pure region growing scores marginally better on precision and materially worse
+on everything about the boxes, which is the wrong trade for a labeler whose
+output trains a detector.
+
+Pile-related false positives fell from 1987 (90.8% of all FPs) to 584 (70.9%),
+and phantom tracks from 48 to 32.
+
+### Why connectivity rather than a threshold
 
 Stone bins the cloud into a 2.5-D grid, fits a plane per cell from the scatter
-matrix eigenvectors, and reports slope, roughness and step. The test stops being
-*how high is this point* and becomes *is this cell part of a continuous surface,
-or something standing on one*. A pile flank is steep but smooth and continuous
-with its neighbours; a truck is not part of the height field at all. Height
-stops mattering, continuity starts mattering — a 3.4 m pile is terrain, a 1.75 m
-worker is not.
+matrix eigenvectors, and reports slope, roughness and step. The first attempt
+used those as per-cell thresholds and bought +15% precision — but 87% of the
+remaining false positives were still pile-related, concentrated in *toe cells*
+where a pile meets flat grade and one cell holds two surfaces, so the plane fit
+is a compromise and the cell fails a test it should pass.
+
+No threshold fixes that, because the question was never "is this cell flat". It
+is **"is this cell connected to the ground"**. A stockpile is continuous with
+the grade beneath it — you can walk from a driven cell to its peak without ever
+stepping up more than the angle of repose allows. A truck is not: grade to roof
+is a three metre jump, and no natural surface does that.
+
+So the ground surface is grown, not thresholded: seed with cells beside the
+machine's own path, flood outward, accept a neighbour whose floor is within one
+cell's repose-limited rise (0.91 m). Toe cells get reached from either side and
+stop being a special case. Height stops mattering; continuity starts mattering.
+
+The step guard is the other half. A truck's lowest *visible* return sits 0.6 to
+1.0 m above the grade beside it — inside the repose allowance — so pure growing
+climbs onto vehicles and eats their lower bodies, leaving floating tops that
+fit small, badly-placed boxes (ATE 0.365 → 0.445, ASE 0.577 → 0.705). Stone's
+`step` closes it: the fill may cross a repose-limited rise, but only into a cell
+that is itself thin. Connectivity decides where terrain extends; step decides
+what is eligible to be terrain at all.
 
 One honest adaptation: Stone's own output is a *traversability* label, and it
-would call a 34° pile NON_TRAVERSABLE, correctly — nothing drives up it. That
-is a different question from terrain-versus-object, so this uses Stone's
-geometry and its driven-trajectory calibration but gates on roughness and step
-with **slope ignored**. Slope is exactly the feature that separates traversable
-ground from a pile, and exactly the feature that must not separate terrain from
-an object.
+would call a 34° pile NON_TRAVERSABLE — correctly, nothing drives up it. That is
+a different question from terrain-versus-object, so the fill ignores slope
+entirely. Slope is exactly the feature that separates drivable ground from a
+pile, and exactly the feature that must not separate terrain from an object.
 
-It is not the elimination that was predicted. 87.3% of the *remaining* false
-positives are still pile-related, down from 90.8%. The residue is most likely
-toe cells, where a pile meets flat grade and one cell holds both surfaces. That
-is the next lever.
-
-Getting there took four attempts, each failing differently and informatively —
-the sequence is in [docs/JOURNAL.md](docs/JOURNAL.md), along with the rest of
-the build.
+Getting here took six attempts, each failing differently and informatively. The
+sequence is in [docs/JOURNAL.md](docs/JOURNAL.md), along with the rest of the
+build.
 
 ## Pipeline B — bootstrap
 

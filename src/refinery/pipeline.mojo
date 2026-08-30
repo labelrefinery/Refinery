@@ -256,7 +256,7 @@ def detect(
         var px = sweep.x[i]
         var py = sweep.y[i]
         var pz = sweep.z[i]
-        if use_terrain and terrain.is_surface(px, py):
+        if use_terrain and terrain.is_terrain(px, py, pz):
             # A cell Stone calls a continuous surface is terrain at any height:
             # the whole column goes, pile included.
             continue

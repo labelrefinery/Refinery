@@ -100,14 +100,14 @@ def main() raises:
 
     var terrain = build_terrain(xs, ys, zs, poses)
     print(
-        "terrain: driven cells",
-        terrain.driven_cells,
-        "surface cells",
-        terrain.surface_cells,
-        "| tau_roughness",
-        terrain.roughness_threshold,
-        "tau_step",
-        terrain.step_threshold,
+        "terrain: observed cells",
+        terrain.observed_cells,
+        "| seeds",
+        terrain.seed_cells,
+        "-> ground surface",
+        terrain.terrain_cells,
+        "cells | blocked as too thick",
+        terrain.blocked_by_step,
     )
 
     # Pass two: detect, now that terrain is known.

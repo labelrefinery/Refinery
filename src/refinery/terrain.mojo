@@ -1,162 +1,141 @@
 """Terrain classification, built on Stone.mojo.
 
-The problem this solves, measured: 92.6% of Pipeline A's false positives sat
-within three metres of a stockpile toe. The old ground removal was "per one
-metre cell, drop everything within 0.35 m of the lowest point". A pile rests at
-its angle of repose, 34 degrees, so across a single cell the surface climbs
+The problem, measured: 92.6% of Pipeline A's false positives sat within three
+metres of a stockpile toe. Ground removal was "per one metre cell, drop
+everything within 0.35 m of the lowest point", but a pile rests at its angle of
+repose, 34 degrees, so across one cell the surface climbs
 `tan(34 deg) x 1.0 = 0.67 m` -- nearly double the tolerance. The bottom of each
-cell was called ground and the top third survived, producing slivers all over
-the flank that the clusterer then did its job on: 33 phantom tracks with a
-median footprint of 4.0 x 2.2 x 1.5 m, which looks entirely like a vehicle.
+cell was called ground and the top third survived as slivers, which the
+clusterer correctly turned into vehicle-shaped objects.
 
 Tightening the tolerance does not fix that. It trades those false positives for
 false negatives on real objects standing near slopes.
 
-Stone asks a better question. It bins the cloud into a 2.5-D grid, fits a plane
-per cell from the eigenvectors of the scatter matrix, and reports slope,
-roughness (RMS residual to that plane) and step (vertical extent within the
-cell). The test stops being *how high is this point* and becomes *is this cell
-part of a continuous surface, or is it something standing on one*:
+**The right question is connectivity, not height.** A stockpile is continuous
+with the grade it sits on: you can walk from a driven cell to the top of the
+pile without ever stepping up more than the angle of repose allows. A truck is
+not -- getting from grade to its roof is a three metre jump in one cell, and no
+natural surface does that.
 
-  - a stockpile flank is a coherent surface -- steep, but smooth, with a step
-    set by the slope and the cell size
-  - a truck or a worker is not part of the height field at all: high residual
-    to any fitted plane, and a step of metres rather than centimetres
+So the ground surface is grown, not thresholded. Seed with the cells the
+machine drove through, then flood outward, accepting a neighbour whenever its
+floor is within one cell's worth of repose-limited rise. Whatever the fill
+reaches is terrain, at any absolute height. Whatever it cannot reach is
+standing on terrain, and is a candidate object.
 
-Height stops mattering, continuity starts mattering. A 3.4 m pile is terrain. A
-1.75 m worker is not.
+  - a 3.4 m pile is reached, one 0.67 m step at a time -> terrain
+  - a 1.75 m worker is a 1.75 m jump from grade -> object
+  - a truck bed at 2.1 m, likewise -> object
+  - toe cells, where a pile meets flat grade and one cell holds both
+    surfaces, are reached from either side -> terrain
 
-**One honest adaptation.** Stone's own output is a *traversability* label, and
-it would call a 34-degree pile NON_TRAVERSABLE -- correctly, since nothing
-drives up it. But that is a different question from terrain-versus-object, and
-using it here would throw the pile back into the clusterer. So this module uses
-Stone's geometry (stages 1-2) and its driven-trajectory calibration trick
-(stage 3), but gates on **roughness and step only, with slope ignored**. Slope
-is exactly the feature that separates traversable ground from a pile, and
-exactly the feature that must not separate terrain from an object.
+That last case is what an earlier per-cell threshold test kept getting wrong,
+and it was the largest remaining source of false positives after the first
+pass at this.
 
-The calibration is still annotation-free. The cells the machine actually drove
-over are known ground by construction, so their roughness and step give the
-scale of "surface" for this sensor on this site, and the thresholds are that
-mean plus a few sigma. Nothing is tuned by hand and nothing is labelled.
+**What Stone provides**: the 2.5-D grid, streaming per-cell accumulation across
+the whole sequence, and the plane fit behind slope, roughness and step. The
+seeding trick is Stone's too -- the driven trajectory is free supervision,
+exactly as joint angles are for the boom chain.
+
+**One honest adaptation**: Stone's own output is a *traversability* label, and
+it would call a 34-degree pile NON_TRAVERSABLE, correctly, since nothing drives
+up it. That is a different question from terrain-versus-object. Slope is
+exactly the feature that separates drivable ground from a pile, and exactly the
+feature that must not separate terrain from an object, so the fill ignores
+slope and reasons about connectivity instead.
 """
-
-from std.math import sqrt
 
 from stone import GridSpec, TerrainGrid, Vec3
 
-from .io import Pose, Sweep
+from .io import Pose
 
 comptime GRID_EXTENT_M = 70.0
 comptime GRID_CELL_M = 1.0
 comptime GRID_CELLS = 140
 """2 * GRID_EXTENT_M / GRID_CELL_M, as an integer literal."""
-comptime SURFACE_SIGMA = 4.0
-"""How far past the driven cells' spread a cell may sit and still count as
-surface. Generous on purpose: a false 'object' costs precision immediately,
-while a missed one is recovered by the next sweep from a new viewpoint."""
-
-comptime DRIVEN_DILATION_CELLS = 3
-"""How far around the machine's own path to look for calibration cells.
-
-Stone calibrates from the cells the robot crossed. A machine cannot observe
-the ground it is standing on -- its own body occludes it, and the self-mask
-removes whatever returns it does get -- so the trajectory cells themselves come
-back unobserved and the calibration set is empty. The cells *beside* the path
-are the honest substitute: the machine physically drove through that patch, so
-it is ground flat enough to carry twenty tonnes, and unlike the path itself it
-was actually seen.
-"""
-
-comptime MIN_SURFACE_FLOOR_M = 0.12
-"""Floor on the learned thresholds, metres. A machine that drives a graded pad
-produces driven cells with almost no spread at all, and a threshold fitted from
-those would call a gravel patch an object. This is the sensor's own noise, not
-a tuning knob."""
 
 comptime REPOSE_TANGENT = 0.6745
-"""tan(34 degrees). Loose material cannot stand steeper than its angle of
-repose, so a genuine surface spans at most `cell_size * tan(repose)` vertically
-within one cell. That is a physical ceiling, not a tuned one, and it is what
-stops a contaminated calibration set from opening the gate wide enough to
-swallow a truck."""
+"""tan(34 degrees), the angle of repose. Loose material cannot stand steeper,
+so a genuine surface rises at most `cell_size * tan(repose)` between adjacent
+cells. A physical constant, not a tuning knob."""
 
-comptime MAX_SURFACE_STEP_M = 1.3
-"""Ceiling on the step threshold, metres. Below a standing person at 1.75 m,
-so a worker can never be absorbed into the terrain however the calibration
-lands."""
+comptime CLIMB_MARGIN = 1.35
+"""Slack on that limit, for sensor noise and for cells straddling a break in
+slope. Total allowed rise per cell is 0.91 m -- comfortably under a standing
+person at 1.75 m, so a worker can never be absorbed into the terrain however
+the fill propagates."""
 
-comptime MAX_SURFACE_ROUGHNESS_M = 0.25
-"""A plane-fit residual above this in a one metre cell means the returns do not
-lie on a plane at all -- which is the definition of not-a-surface."""
+comptime MAX_TERRAIN_STEP_M = 1.30
+"""Ceiling on a cell's vertical extent for it to be terrain at all.
 
+Connectivity alone is not quite enough. A truck's lowest *visible* return sits
+0.6 to 1.0 m above the grade beside it -- inside the repose allowance -- so a
+pure floor-based fill climbs onto the vehicle, eats its lower body, and leaves
+a floating top that fits a small, badly placed box. Measured: precision rose to
+0.664 but ATE went 0.365 -> 0.445 and ASE 0.577 -> 0.705.
 
-def _median(values: List[Float64]) -> Float64:
-    """Robust centre. The calibration set is cells beside the machine's path,
-    and things walk through it: a worker crossing the swing radius lands a
-    1.75 m step in one of them. A mean plus four sigma is then wide enough to
-    admit a haul truck. A median does not care."""
-    if len(values) == 0:
-        return 0.0
-    var sorted_values = values.copy()
-    for i in range(1, len(sorted_values)):
-        var key = sorted_values[i]
-        var j = i - 1
-        while j >= 0 and sorted_values[j] > key:
-            sorted_values[j + 1] = sorted_values[j]
-            j -= 1
-        sorted_values[j + 1] = key
-    return sorted_values[len(sorted_values) // 2]
+Stone's `step` closes it. A pile cell spans `cell_size * tan(repose)` = 0.67 m
+vertically; a truck cell spans two to three metres. So the fill may cross a
+repose-limited rise, but only into a cell that is itself thin. Below a standing
+person at 1.75 m, so a worker still cannot be absorbed.
+"""
 
+comptime GROUND_CLEARANCE_M = 0.30
+"""How far above a reached cell's floor a point still counts as ground. A
+worker standing in a reached cell is still an object: the cell is terrain, the
+points a metre and a half above its floor are not."""
 
-def _mad(values: List[Float64], centre: Float64) -> Float64:
-    """Median absolute deviation, scaled to be a standard-deviation estimate."""
-    if len(values) == 0:
-        return 0.0
-    var deviations = List[Float64]()
-    for i in range(len(values)):
-        var d = values[i] - centre
-        deviations.append(d if d >= 0.0 else -d)
-    return 1.4826 * _median(deviations)
+comptime DRIVEN_DILATION_CELLS = 3
+"""How far around the machine's own path to look for seed cells.
+
+A machine cannot observe the ground it is standing on -- its own body occludes
+it, and the self-mask removes whatever leaks through -- so the trajectory cells
+themselves come back unobserved and seeding on them yields an empty set. The
+cells beside the path are the honest substitute: the machine physically drove
+through that patch, so it is ground flat enough to carry twenty tonnes, and
+unlike the path itself it was actually seen.
+"""
 
 
 struct TerrainModel(Movable):
-    """Per-cell surface classification over the whole scene."""
+    """The grown ground surface, and what it says about any given point."""
 
     var spec: GridSpec
-    var surface: List[Bool]
-    var observed: List[Bool]
-    var elevation: List[Float64]
-    var driven_cells: Int
-    var surface_cells: Int
-    var roughness_threshold: Float64
-    var step_threshold: Float64
+    var reached: List[Bool]
+    """Cells the fill reached from the machine's own path."""
+    var floor_z: List[Float64]
+    """Lowest return in the cell: the ground surface, where reached."""
+    var blocked_by_step: Int
+    """Cells the fill declined to enter because they were too thick to be
+    surface. These are the object candidates it protected."""
+    var seed_cells: Int
+    var terrain_cells: Int
+    var observed_cells: Int
 
     def __init__(
         out self,
         var spec: GridSpec,
-        var surface: List[Bool],
-        var observed: List[Bool],
-        var elevation: List[Float64],
-        driven_cells: Int,
-        surface_cells: Int,
-        roughness_threshold: Float64,
-        step_threshold: Float64,
+        var reached: List[Bool],
+        var floor_z: List[Float64],
+        seed_cells: Int,
+        terrain_cells: Int,
+        observed_cells: Int,
+        blocked_by_step: Int,
     ):
         self.spec = spec^
-        self.surface = surface^
-        self.observed = observed^
-        self.elevation = elevation^
-        self.driven_cells = driven_cells
-        self.surface_cells = surface_cells
-        self.roughness_threshold = roughness_threshold
-        self.step_threshold = step_threshold
+        self.reached = reached^
+        self.floor_z = floor_z^
+        self.seed_cells = seed_cells
+        self.terrain_cells = terrain_cells
+        self.observed_cells = observed_cells
+        self.blocked_by_step = blocked_by_step
 
-    def is_surface(self, x: Float64, y: Float64) -> Bool:
+    def is_terrain(self, x: Float64, y: Float64, z: Float64) -> Bool:
         var idx = self.spec.index_of(x, y)
-        if idx < 0:
+        if idx < 0 or not self.reached[idx]:
             return False
-        return self.surface[idx]
+        return z <= self.floor_z[idx] + GROUND_CLEARANCE_M
 
 
 def build_terrain(
@@ -165,10 +144,10 @@ def build_terrain(
     sweeps_z: List[List[Float64]],
     poses: List[Pose],
 ) raises -> TerrainModel:
-    """Accumulate every sweep, fit per-cell planes, calibrate from the drive.
+    """Accumulate every sweep, then grow the ground surface from the drive.
 
     Aggregating the whole sequence before deciding anything is the offboard
-    advantage in its purest form: each pass over the same ground adds a
+    advantage in its purest form: every pass over the same ground adds a
     viewpoint, so a cell seen edge-on early is seen properly later, and nothing
     has to be decided in real time.
     """
@@ -176,18 +155,33 @@ def build_terrain(
         -GRID_EXTENT_M, -GRID_EXTENT_M, GRID_CELL_M, GRID_CELLS, GRID_CELLS
     )
     var grid = TerrainGrid(spec)
+    var count = spec.cell_count()
+
+    var floor_z = List[Float64](length=count, fill=1.0e18)
+    var observed = List[Bool](length=count, fill=False)
+    var observed_cells = 0
 
     for f in range(len(sweeps_x)):
         var points = List[Vec3]()
         for i in range(len(sweeps_x[f])):
-            points.append(Vec3(sweeps_x[f][i], sweeps_y[f][i], sweeps_z[f][i]))
+            var px = sweeps_x[f][i]
+            var py = sweeps_y[f][i]
+            var pz = sweeps_z[f][i]
+            points.append(Vec3(px, py, pz))
+            var idx = spec.index_of(px, py)
+            if idx < 0:
+                continue
+            if not observed[idx]:
+                observed[idx] = True
+                observed_cells += 1
+            if pz < floor_z[idx]:
+                floor_z[idx] = pz
         grid.ingest(points)
     grid.finalize()
 
-    # The machine's own path is known ground, for free -- but dilated, see
-    # DRIVEN_DILATION_CELLS.
-    var claimed = List[Bool](length=spec.cell_count(), fill=False)
-    var driven = List[Int]()
+    # -- seed: the observed neighbourhood of the machine's own path ---------
+    var reached = List[Bool](length=count, fill=False)
+    var frontier = List[Int]()
     for i in range(len(poses)):
         var cx = Int((poses[i].tx - spec.origin_x) / spec.cell_size)
         var cy = Int((poses[i].ty - spec.origin_y) / spec.cell_size)
@@ -198,59 +192,45 @@ def build_terrain(
                 if ix < 0 or iy < 0 or ix >= spec.nx or iy >= spec.ny:
                     continue
                 var idx = iy * spec.nx + ix
-                if claimed[idx] or not grid.cells[idx].observed:
+                if reached[idx] or not observed[idx]:
                     continue
-                claimed[idx] = True
-                driven.append(idx)
+                reached[idx] = True
+                frontier.append(idx)
+    var seeds = len(frontier)
 
-    # Calibrate from those cells, robustly.
-    var roughnesses = List[Float64]()
-    var steps = List[Float64]()
-    for i in range(len(driven)):
-        roughnesses.append(grid.cells[driven[i]].roughness)
-        steps.append(grid.cells[driven[i]].step)
+    # -- grow: four-connected, one repose-limited step at a time ------------
+    var max_climb = GRID_CELL_M * REPOSE_TANGENT * CLIMB_MARGIN
+    var terrain_cells = seeds
+    var blocked = 0
+    while len(frontier) > 0:
+        var current = frontier[len(frontier) - 1]
+        _ = frontier.pop()
+        var cx = current % spec.nx
+        var cy = current // spec.nx
+        var here = floor_z[current]
 
-    var med_r = _median(roughnesses)
-    var med_s = _median(steps)
-    var tau_r = med_r + SURFACE_SIGMA * _mad(roughnesses, med_r)
-    var tau_s = med_s + SURFACE_SIGMA * _mad(steps, med_s)
-
-    if tau_r < MIN_SURFACE_FLOOR_M:
-        tau_r = MIN_SURFACE_FLOOR_M
-    if tau_r > MAX_SURFACE_ROUGHNESS_M:
-        tau_r = MAX_SURFACE_ROUGHNESS_M
-    # Step is bracketed by physics from both sides, so the learned value only
-    # moves it within a narrow band -- roughness is what actually discriminates.
-    # Floor: a surface at the angle of repose spans cell_size * tan(repose)
-    # vertically, and must still count as surface. Ceiling: below the height of
-    # the shortest object worth finding, which is a standing person.
-    var step_floor = GRID_CELL_M * REPOSE_TANGENT * 1.35
-    if tau_s < step_floor:
-        tau_s = step_floor
-    if tau_s > MAX_SURFACE_STEP_M:
-        tau_s = MAX_SURFACE_STEP_M
-
-    var surface = List[Bool](length=spec.cell_count(), fill=False)
-    var observed = List[Bool](length=spec.cell_count(), fill=False)
-    var elevation = List[Float64](length=spec.cell_count(), fill=0.0)
-    var surface_count = 0
-    for i in range(spec.cell_count()):
-        ref cell = grid.cells[i]
-        observed[i] = cell.observed
-        elevation[i] = cell.elevation
-        if not cell.observed:
-            continue
-        if cell.roughness <= tau_r and cell.step <= tau_s:
-            surface[i] = True
-            surface_count += 1
+        for k in range(4):
+            var ix = cx + (1 if k == 0 else (-1 if k == 1 else 0))
+            var iy = cy + (1 if k == 2 else (-1 if k == 3 else 0))
+            if ix < 0 or iy < 0 or ix >= spec.nx or iy >= spec.ny:
+                continue
+            var idx = iy * spec.nx + ix
+            if reached[idx] or not observed[idx]:
+                continue
+            var rise = floor_z[idx] - here
+            if rise < 0.0:
+                rise = -rise
+            if rise > max_climb:
+                continue
+            # Thin enough to be a surface? A pile cell spans 0.67 m, a truck
+            # cell spans two to three.
+            if grid.cells[idx].step > MAX_TERRAIN_STEP_M:
+                blocked += 1
+                continue
+            reached[idx] = True
+            terrain_cells += 1
+            frontier.append(idx)
 
     return TerrainModel(
-        spec^,
-        surface^,
-        observed^,
-        elevation^,
-        len(driven),
-        surface_count,
-        tau_r,
-        tau_s,
+        spec^, reached^, floor_z^, seeds, terrain_cells, observed_cells, blocked
     )

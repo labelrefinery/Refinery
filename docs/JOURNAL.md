@@ -186,40 +186,71 @@ pile cells failed the surface test and nothing changed. The physical bracket
 runs the other way: a surface at the steepest natural slope must still count as
 surface (floor), and the threshold must stay below a standing person (ceiling).
 
-## 9. Where it stands
+## 9. Thresholding cells was the wrong shape of answer
 
-Same binary, same scene, `--terrain on|off`:
+The per-cell test above bought +15% precision at zero cost in true positives,
+which was real, but 87.3% of the *remaining* false positives were still
+pile-related. The residue was toe cells: where a pile meets flat grade, one
+cell holds two surfaces, the plane fit is a compromise, and the cell fails a
+roughness test it should pass.
 
-| | terrain off | terrain on | |
-| --- | --- | --- | --- |
-| TP | 1555 | **1555** | unchanged |
-| FP | 2189 | **1700** | −489 |
-| FN | 845 | **845** | unchanged |
-| precision | 0.415 | **0.478** | +15% |
-| recall | 0.648 | 0.648 | unchanged |
-| F1 | 0.506 | **0.550** | +8.7% |
-| ATE | 0.379 m | 0.365 m | |
+No threshold fixes that, because the question was never "is this cell flat".
+**It is "is this cell connected to the ground".** A stockpile is continuous
+with the grade it sits on -- you can walk from a driven cell to its peak
+without ever stepping up more than the angle of repose allows. A truck is not:
+grade to roof is a three metre jump, and no natural surface does that.
 
-**Stone removed 489 false positives at a cost of exactly zero true positives.**
-Identical TP and FN is the result worth having — the terrain stage is removing
-only things that were never objects.
+So the ground surface is now *grown*, not thresholded. Seed with the cells
+beside the machine's path, flood outward, accept a neighbour when its floor is
+within one cell's repose-limited rise. Toe cells are reached from either side,
+so they stop being a special case.
 
-It is a real win and not the elimination that was predicted. 87.3% of the
-*remaining* false positives are still pile-related, down from 90.8%, and
-phantom tracks fell from 48 to 31. The residue is most likely toe cells, where
-a pile meets flat grade and one cell contains both surfaces, so the plane fit
-is a compromise and the cell fails the roughness test. That is the next lever.
+**That overshot, informatively.** Precision went to 0.664, but ATE degraded
+0.365 -> 0.445 and ASE 0.577 -> 0.705. A truck's lowest *visible* return sits
+0.6 to 1.0 m above the grade beside it -- inside the repose allowance -- so the
+fill climbed onto vehicles, ate their lower bodies, and left floating tops that
+fit small, badly-placed boxes.
 
-## 10. What the numbers say to build next
+The fix is to combine the two ideas rather than choose between them: the fill
+may cross a repose-limited rise, but **only into a cell that is itself thin**.
+Stone's `step` supplies that -- a pile cell spans 0.67 m vertically, a truck
+cell spans two to three. Connectivity decides where terrain extends; step
+decides what is eligible to be terrain at all. 162 cells were refused entry on
+those grounds.
+
+## 10. Where it stands
+
+Four configurations, same binary, same scene:
+
+| | none | threshold | grow | grow + step guard |
+| --- | --- | --- | --- | --- |
+| TP | 1555 | 1555 | 1542 | **1552** |
+| FP | 2189 | 1700 | 782 | **824** |
+| precision | 0.415 | 0.478 | 0.664 | **0.653** |
+| recall | 0.648 | 0.648 | 0.643 | **0.647** |
+| F1 | 0.506 | 0.550 | 0.653 | **0.650** |
+| ATE | 0.379 | 0.365 | 0.445 | **0.365** |
+| ASE | 0.575 | 0.577 | 0.705 | **0.576** |
+
+The last column is the one to ship: **62% fewer false positives than the
+baseline, three true positives lost out of 1555, and box quality unchanged.**
+Pure region growing scores marginally better on precision and materially worse
+on everything about the boxes, which is the wrong trade for a labeler whose
+output trains a detector.
+
+Pile-related false positives fell from 1987 (90.8%) to 584 (70.9%), and phantom
+tracks from 48 to 32.
+
+## 11. What the numbers say to build next
 
 **ATE 0.365 m is already good** on objects nothing was ever told about.
 Geometry finds *where* things are.
 
-**AOE 0.749 rad is worthless, and provably so.** The scale runs 0 to π/2, and a
+**AOE 0.750 rad is worthless, and provably so.** The scale runs 0 to π/2, and a
 uniformly random heading averages 0.785. The PCA heading is statistically
 indistinguishable from a coin flip.
 
-**ASE 0.577 means aligned IoU 0.423** — the boxes disagree on most of their
+**ASE 0.576 means aligned IoU 0.424** — the boxes disagree on most of their
 volume even given the right position and heading.
 
 Both have one cause and it is not the code: a cluster is an object's *visible
