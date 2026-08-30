@@ -249,6 +249,49 @@ journal), and `TrackPermanence` / `LabelFormer` / `GroundingDino` need domain
 checkpoints. AOE at 0.630 is the clearest target — `LabelFormer` refines a
 whole trajectory rather than a frame, which is what heading needs.
 
+## Named workflows
+
+The two pipelines are `workflows/`, parameterised and resumable:
+
+```sh
+# no model, no checkpoint, no class list -- geometry only
+python -m workflows bootstrap_new_classes \
+    --scene site.mcap --work runs/a --truth runs/a/truth.csv
+
+# distil a detector from those labels and label again
+python -m workflows improve_offboard_model \
+    --scene site.mcap --work runs/a --labels runs/a/labels.csv --round r1
+```
+
+Every stage declares its inputs, outputs and parameters; the context hashes
+them and skips any stage a previous run already produced. Re-running a finished
+workflow costs a second and touches nothing:
+
+```
+· export_scene               skipped (unchanged)
+· geometric_labels           skipped (unchanged)
+...
+bootstrap_new_classes: 0 steps ran, 7 skipped, 0s
+```
+
+That is not just convenience. Durable-execution engines replay handlers, so
+every step must be idempotent or a retry doubles the work — making it true here
+in plain Python means adopting Restate or Temporal later is *wrapping* this
+rather than rewriting it. `manifest.<workflow>.json` doubles as the provenance
+record: what ran, with which parameters, over which input hashes, producing
+which artefacts.
+
+Feeding one workflow's `labels` into the next is the loop:
+
+| | training labels | student output |
+| --- | --- | --- |
+| precision | 0.865 | **0.910** |
+| recall | 0.547 | **0.637** |
+| F1 | 0.670 | **0.750** |
+
+`min_path_m` is the load-bearing parameter, not a tuning knob — on unfiltered
+labels the same code goes *backwards*.
+
 ## Looking at the labels
 
 Scoring tells you a stage got worse; it does not tell you *where*. For that,

@@ -3,3 +3,5 @@ build/
 shelf/
 work/
 *.conda
+__pycache__/
+runs/
