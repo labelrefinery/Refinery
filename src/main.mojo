@@ -16,7 +16,14 @@ from refinery.io import (
     read_poses,
     read_sweep,
 )
-from refinery.pipeline import Detection, associate, detect, ego_mask, smooth
+from refinery.pipeline import (
+    Detection,
+    associate,
+    detect,
+    ego_mask,
+    read_detections,
+    smooth,
+)
 from refinery.terrain import TerrainModel, build_terrain
 from refinery.pipeline import MIN_TRACK_FRAMES
 
@@ -36,6 +43,7 @@ def main() raises:
     var measurement_var = 0.25
     var use_terrain = True
     var reverse = False
+    var detections_csv = String("")
     var i = 3
     while i + 1 < len(args):
         if args[i] == "--accel-var":
@@ -46,7 +54,31 @@ def main() raises:
             use_terrain = args[i + 1] == "on"
         elif args[i] == "--reverse":
             reverse = args[i + 1] == "on"
+        elif args[i] == "--detections":
+            detections_csv = String(args[i + 1])
         i += 2
+
+    var per_frame = List[List[Detection]]()
+    var frame_times = List[Float64]()
+
+    if detections_csv != "":
+        print(
+            "detections from", detections_csv, "-- skipping sweeps and terrain"
+        )
+        read_detections(detections_csv, per_frame, frame_times)
+        var n = 0
+        for f in range(len(per_frame)):
+            n += len(per_frame[f])
+        print("frames:", len(per_frame), "detections:", n)
+        run_tracking(
+            per_frame^,
+            frame_times^,
+            out_path,
+            accel_var,
+            measurement_var,
+            reverse,
+        )
+        return
 
     var poses = read_poses(work + "/tf.csv")
     var joints = read_joints(work + "/joints.csv")
@@ -64,7 +96,6 @@ def main() raises:
     var xs = List[List[Float64]]()
     var ys = List[List[Float64]]()
     var zs = List[List[Float64]]()
-    var frame_times = List[Float64]()
     var total_points = 0
     var ego_points = 0
     for f in range(len(index)):
@@ -114,7 +145,6 @@ def main() raises:
     )
 
     # Pass two: detect, now that terrain is known.
-    var per_frame = List[List[Detection]]()
     var total_dets = 0
     for f in range(len(index)):
         var sweep = Sweep(frame_times[f])
@@ -129,6 +159,20 @@ def main() raises:
 
     print("raw detections:", total_dets)
 
+    run_tracking(
+        per_frame^, frame_times^, out_path, accel_var, measurement_var, reverse
+    )
+
+
+def run_tracking(
+    var per_frame: List[List[Detection]],
+    var frame_times: List[Float64],
+    out_path: String,
+    accel_var: Float64,
+    measurement_var: Float64,
+    reverse: Bool,
+) raises -> None:
+    """Associate, smooth offline, filter short tracks, write the tracker CSV."""
     # A second, genuinely different tracklet set: associate backwards through
     # time. Births and deaths swap ends, gating resolves differently around
     # occlusions, and fragments break in different places -- which is exactly

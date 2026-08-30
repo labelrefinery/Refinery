@@ -341,3 +341,53 @@ Two choices in the adapter worth stating:
 
 That leaves 480 train and 120 val sweeps carrying 1700 boxes — none of them
 human-labelled, all of them Pipeline A's own output.
+
+## 14. The student learns shape, inherits the teacher's mistakes, and amplifies them
+
+Trained on Pipeline A's own output, nothing human-labelled: 20 epochs, 0.61M
+parameters, ~6 minutes on MPS. Against the pseudo-labels it reaches **mAP
+0.895**, which only says it reproduced its teacher.
+
+Against the oracle, run through the *same* association, smoothing and
+track-length filter the teacher gets — otherwise the comparison is a tracker,
+not a detector:
+
+| | TP | FP | precision | recall | F1 | ATE | ASE | AOE |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **A — teacher** | 1552 | 824 | **0.653** | 0.647 | **0.650** | **0.365** | 0.576 | 0.750 |
+| B — student @0.1 | 1576 | 2292 | 0.407 | **0.657** | 0.503 | 0.379 | 0.539 | 0.629 |
+| B — student @0.2 | 1561 | 1450 | 0.518 | 0.650 | 0.577 | 0.366 | 0.530 | 0.620 |
+| B — student @0.3 | 1424 | 953 | 0.599 | 0.593 | 0.596 | 0.387 | 0.498 | 0.579 |
+| B — student @0.4 | 1269 | 625 | 0.670 | 0.529 | 0.591 | 0.391 | **0.453** | **0.553** |
+
+**The prediction held.** §11 argued that ASE and AOE were bad structurally,
+because a cluster is an object's visible surface and the missing information is
+a shape prior only a trained model carries. The student improves both at *every
+threshold*, monotonically: ASE 0.576 → 0.453, AOE 0.750 → 0.553. AOE matters
+most — 0.750 was statistically indistinguishable from a coin flip against a
+random baseline of 0.785; 0.553 is genuinely informative. One round of
+distillation over 480 sweeps bought a heading estimator where geometry had
+none.
+
+**But F1 never beats the teacher**, at any threshold: 0.596 against 0.650. At
+0.2 the student matches recall (0.650 vs 0.647) with better boxes and worse
+precision; at 0.4 it beats precision (0.670 vs 0.653) and loses recall.
+
+**Why, measured.** The teacher's 824 false positives are not noise the student
+can average away — they are *labelled as positives in its training set*:
+
+```
+teacher labels        2376 rows,  701 (29.5%) sit on a stockpile
+student output        2377 rows,  888 (37.4%) sit on a stockpile
+```
+
+The student did not just inherit the systematic error, it **amplified** it,
+29.5% → 37.4%. That is textbook pseudo-label error propagation, and it is the
+whole reason this is a *loop* and not a step. Round two needs its training
+labels filtered before it starts — by teacher/student agreement, by track
+stability, or by driving the terrain stage harder — and none of that is
+possible until round one exists to disagree with.
+
+**Net for one round**: better at describing objects, no better at finding them,
+and worse at not inventing them. Exactly the shape of result that says what to
+do next rather than that the approach works.

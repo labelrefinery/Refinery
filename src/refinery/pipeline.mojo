@@ -235,6 +235,53 @@ struct Detection(ImplicitlyCopyable, Movable):
         return c if c < 1.0 else 1.0
 
 
+def read_detections(
+    path: String,
+    mut frames: List[List[Detection]],
+    mut times: List[Float64],
+) raises -> None:
+    """Load per-frame detections from a tracker-schema CSV.
+
+    Lets an external detector -- the distilled student -- be run through the
+    exact same association, smoothing and track-length filter the geometric
+    front end gets, so the two can be compared without the tracker being a
+    confound. Confidence is carried as a point count, since that is what the
+    association solver reads it through.
+    """
+    from .io import read_csv_rows
+
+    var rows = read_csv_rows(path)
+    var current = List[Detection]()
+    var last = -1.0e18
+
+    for i in range(len(rows)):
+        ref r = rows[i]
+        var t = Float64(r[2])
+        if t != last:
+            if last > -1.0e17:
+                frames.append(current^)
+                times.append(last)
+                current = List[Detection]()
+            last = t
+        var conf = Float64(r[12])
+        current.append(
+            Detection(
+                t,
+                Float64(r[3]),
+                Float64(r[4]),
+                Float64(r[5]),
+                Float64(r[6]),
+                Float64(r[7]),
+                Float64(r[8]),
+                Float64(r[11]),
+                Int(conf * 60.0),
+            )
+        )
+    if last > -1.0e17:
+        frames.append(current^)
+        times.append(last)
+
+
 def _voxel_key(ix: Int, iy: Int, iz: Int) -> Int:
     return (ix + 4096) * 16_777_216 + (iy + 4096) * 4096 + (iz + 512)
 

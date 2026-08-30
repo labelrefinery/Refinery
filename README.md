@@ -174,19 +174,43 @@ Getting here took six attempts, each failing differently and informatively. The
 sequence is in [docs/JOURNAL.md](docs/JOURNAL.md), along with the rest of the
 build.
 
-## Pipeline B — bootstrap
-
-Not built yet. The loop:
+## Pipeline B — bootstrap, round one
 
 ```
-A's pseudo-labels → CenterPillars.py (train) → CenterPillars.mojo (infer)
-  → OfflinePoly.mojo (offline MOT) → TrackPermanence.mojo (occlusion recovery)
-  → LabelFormer.mojo (trajectory refinement) → rescore → retrain
+A's pseudo-labels → to_centerpillars.py → CenterPillars.py (train)
+  → predict_sitegen.py (infer) → the same association + RTS smoothing → score
 ```
 
-`GroundingDino.mojo` covers open-vocabulary discovery for whatever the detector
-has no class for. The number that makes the case is one curve: label quality
-against round, with the oracle as the ceiling.
+No changes to `CenterPillars.py`. Its `SweepDataset` already reads
+`<root>/<split>/<log>/<ts>.npz`, so that layout is the interface;
+`scripts/to_centerpillars.py` writes it and `scripts/predict_sitegen.py` runs
+the checkpoint using CenterPillars as a library. 480 train / 120 val sweeps,
+1700 boxes, **none human-labelled**.
+
+Scored against the oracle through the *same* tracker the teacher gets:
+
+| | TP | FP | precision | recall | F1 | ATE | ASE | AOE |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **A — teacher** | 1552 | 824 | **0.653** | 0.647 | **0.650** | **0.365** | 0.576 | 0.750 |
+| B — student @0.2 | 1561 | 1450 | 0.518 | **0.650** | 0.577 | 0.366 | 0.530 | 0.620 |
+| B — student @0.4 | 1269 | 625 | 0.670 | 0.529 | 0.591 | 0.391 | **0.453** | **0.553** |
+
+**The prediction held.** ASE and AOE improve at every threshold — 0.576 → 0.453
+and 0.750 → 0.553. AOE is the one that matters: 0.750 was indistinguishable
+from a coin flip against a random baseline of 0.785, and 0.553 is genuinely
+informative. One distillation round bought a heading estimator where geometry
+structurally had none.
+
+**F1 never beats the teacher**, and the measurement says why: the teacher's 824
+false positives are labelled as positives in the student's training set, and
+the student amplified them — 29.5% of teacher labels sit on a stockpile, 37.4%
+of student output does. That is pseudo-label error propagation, and it is why
+this is a loop rather than a step. Round two needs its labels filtered first,
+by teacher/student agreement or track stability.
+
+Still to wire: `OfflinePoly` sits at the right place but degrades size (see the
+journal), and `TrackPermanence` / `LabelFormer` / `GroundingDino` need domain
+checkpoints.
 
 ## Layout
 
