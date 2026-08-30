@@ -9,8 +9,15 @@ next stage is a pipe rather than an adapter.
 
 from std.sys import argv
 
-from refinery.io import read_csv_rows, read_joints, read_poses, read_sweep
+from refinery.io import (
+    Sweep,
+    read_csv_rows,
+    read_joints,
+    read_poses,
+    read_sweep,
+)
 from refinery.pipeline import Detection, associate, detect, ego_mask, smooth
+from refinery.terrain import TerrainModel, build_terrain
 from refinery.pipeline import MIN_TRACK_FRAMES
 
 
@@ -27,44 +34,97 @@ def main() raises:
     var out_path = String(args[2])
     var accel_var = 1.5
     var measurement_var = 0.25
+    var use_terrain = True
     var i = 3
     while i + 1 < len(args):
         if args[i] == "--accel-var":
             accel_var = Float64(String(args[i + 1]))
         elif args[i] == "--meas-var":
             measurement_var = Float64(String(args[i + 1]))
+        elif args[i] == "--terrain":
+            use_terrain = args[i + 1] == "on"
         i += 2
 
     var poses = read_poses(work + "/tf.csv")
     var joints = read_joints(work + "/joints.csv")
     var index = read_csv_rows(work + "/sweeps/index.csv")
-    print("frames:", len(index))
+    print(
+        "frames:",
+        len(index),
+        "| terrain stage:",
+        "on" if use_terrain else "off",
+    )
 
-    var per_frame = List[List[Detection]]()
+    # Pass one: lift every sweep into the map frame and hold it. The whole
+    # sequence has to be in hand before terrain can be decided, which is the
+    # offboard advantage restated as a data dependency.
+    var xs = List[List[Float64]]()
+    var ys = List[List[Float64]]()
+    var zs = List[List[Float64]]()
     var frame_times = List[Float64]()
     var total_points = 0
-    var total_dets = 0
+    var ego_points = 0
     for f in range(len(index)):
         ref row = index[f]
         var t = Float64(row[1])
         frame_times.append(t)
         var sweep = read_sweep(work + "/sweeps", String(row[3]), t, poses[f])
         total_points += len(sweep)
+        # Self-mask here, before anything downstream sees the cloud. The
+        # terrain calibration needs it as much as the clusterer does: the
+        # driven cells are exactly where the machine is standing, so leaving
+        # its own returns in makes "known ground" contain a 3 m machine.
         var mask = ego_mask(poses[f], joints[f])
-        var dets = detect(sweep, mask)
+        var fx = List[Float64]()
+        var fy = List[Float64]()
+        var fz = List[Float64]()
+        for i in range(len(sweep)):
+            if mask.masks(sweep.x[i], sweep.y[i], sweep.z[i]):
+                continue
+            fx.append(sweep.x[i])
+            fy.append(sweep.y[i])
+            fz.append(sweep.z[i])
+        ego_points += len(sweep) - len(fx)
+        xs.append(fx^)
+        ys.append(fy^)
+        zs.append(fz^)
+    print(
+        "points:",
+        total_points,
+        "| ego self-returns removed:",
+        ego_points,
+        "(",
+        100.0 * Float64(ego_points) / Float64(total_points),
+        "% )",
+    )
+
+    var terrain = build_terrain(xs, ys, zs, poses)
+    print(
+        "terrain: driven cells",
+        terrain.driven_cells,
+        "surface cells",
+        terrain.surface_cells,
+        "| tau_roughness",
+        terrain.roughness_threshold,
+        "tau_step",
+        terrain.step_threshold,
+    )
+
+    # Pass two: detect, now that terrain is known.
+    var per_frame = List[List[Detection]]()
+    var total_dets = 0
+    for f in range(len(index)):
+        var sweep = Sweep(frame_times[f])
+        sweep.x = xs[f].copy()
+        sweep.y = ys[f].copy()
+        sweep.z = zs[f].copy()
+        var dets = detect(sweep, terrain, use_terrain)
         total_dets += len(dets)
         per_frame.append(dets^)
-        if f % 100 == 0:
-            print(
-                "  frame",
-                f,
-                "points",
-                len(sweep),
-                "detections",
-                len(per_frame[f]),
-            )
+        if f % 200 == 0:
+            print("  frame", f, "detections", len(per_frame[f]))
 
-    print("points:", total_points, "raw detections:", total_dets)
+    print("raw detections:", total_dets)
 
     var tracks = associate(per_frame, frame_times)
     var kept = 0

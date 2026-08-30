@@ -21,6 +21,7 @@ from hungarian import CostMatrix, solve_gated, UNASSIGNED
 from kalman import GaussianState, Matrix, Observation, smooth_track
 
 from .io import Joints, Pose, Sweep
+from .terrain import TerrainModel
 
 # ===----------------------------------------------------------------------===
 # Tunables
@@ -238,8 +239,14 @@ def _voxel_key(ix: Int, iy: Int, iz: Int) -> Int:
     return (ix + 4096) * 16_777_216 + (iy + 4096) * 4096 + (iz + 512)
 
 
-def detect(sweep: Sweep, mask: EgoMask) raises -> List[Detection]:
-    """Self-mask, remove ground, cluster what is left, fit a box to each."""
+def detect(
+    sweep: Sweep, terrain: TerrainModel, use_terrain: Bool
+) raises -> List[Detection]:
+    """Self-mask, drop terrain, cluster what is left, fit a box to each.
+
+    With `use_terrain` off this falls back to the per-cell-minimum ground
+    removal, which is kept only so the two can be compared on the same scene.
+    """
     var n = len(sweep)
 
     # -- ego self-mask, then a per-cell ground estimate over the survivors ---
@@ -249,7 +256,9 @@ def detect(sweep: Sweep, mask: EgoMask) raises -> List[Detection]:
         var px = sweep.x[i]
         var py = sweep.y[i]
         var pz = sweep.z[i]
-        if mask.masks(px, py, pz):
+        if use_terrain and terrain.is_surface(px, py):
+            # A cell Stone calls a continuous surface is terrain at any height:
+            # the whole column goes, pile included.
             continue
         keep[i] = True
         var cell = _voxel_key(

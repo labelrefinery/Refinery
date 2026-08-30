@@ -16,7 +16,7 @@ estimation, so it runs on a scene it has never seen:
 ```
 sitegen MCAP
   → proprioception self-mask     forward kinematics from /ego/joint_states
-  → ground removal               per-cell minimum, not a global plane
+  → terrain classification       Stone.mojo      (per-cell plane fit)
   → voxel clustering             26-neighbourhood connected components
   → oriented box fit             PCA heading in the ground plane
   → gated association            Hungarian.mojo  (solve_gated)
@@ -102,18 +102,59 @@ this, because the information is not in a single sweep. It is in the
 detector encodes as a size prior. This is the clearest argument in the repo for
 why stage B exists.
 
-**Precision is dragged down by the ontology, not by the clustering.** Measured:
-**92.6% of false positives sit within 3 m of a stockpile toe**, from 33
-persistent phantom tracks with a median footprint of 4.0 x 2.2 x 1.5 m. They are genuinely above ground and genuinely
-clustered, and a geometric pipeline is right to find them — but the oracle
-calls them terrain, not actors. That is the terrain-is-a-surface-not-a-box
-problem, and the fix is `Stone.mojo` classifying them as traversable terrain
-before clustering runs, not a better clusterer.
+**Precision was dragged down by the ontology, not by the clustering.** Measured:
+92.6% of false positives sat within 3 m of a stockpile toe, from 33 persistent
+phantom tracks with a median footprint of 4.0 × 2.2 × 1.5 m. Genuinely above
+ground, genuinely clustered, and the oracle calls them terrain. `Stone.mojo`
+now runs ahead of clustering — see the ablation below.
 
 **Recall depends entirely on what you count.** With grade stakes included it is
 0.26; without them, 0.65. A stake is 50 mm square and collects a couple of
 returns per sweep, so leaving it in measures the LiDAR rather than the labeler.
 `--exclude grade_stake` is the honest default.
+
+## The terrain stage, ablated
+
+Same binary, same scene, `--terrain on|off`:
+
+| | terrain off | terrain on | |
+| --- | --- | --- | --- |
+| TP | 1555 | **1555** | unchanged |
+| FP | 2189 | **1700** | −489 |
+| FN | 845 | **845** | unchanged |
+| precision | 0.415 | **0.478** | +15% |
+| recall | 0.648 | 0.648 | unchanged |
+| F1 | 0.506 | **0.550** | +8.7% |
+| ATE | 0.379 m | 0.365 m | |
+
+**Identical TP and FN is the result worth having**: the terrain stage removed
+489 false positives and cost exactly zero true positives, so it is only
+removing things that were never objects.
+
+Stone bins the cloud into a 2.5-D grid, fits a plane per cell from the scatter
+matrix eigenvectors, and reports slope, roughness and step. The test stops being
+*how high is this point* and becomes *is this cell part of a continuous surface,
+or something standing on one*. A pile flank is steep but smooth and continuous
+with its neighbours; a truck is not part of the height field at all. Height
+stops mattering, continuity starts mattering — a 3.4 m pile is terrain, a 1.75 m
+worker is not.
+
+One honest adaptation: Stone's own output is a *traversability* label, and it
+would call a 34° pile NON_TRAVERSABLE, correctly — nothing drives up it. That
+is a different question from terrain-versus-object, so this uses Stone's
+geometry and its driven-trajectory calibration but gates on roughness and step
+with **slope ignored**. Slope is exactly the feature that separates traversable
+ground from a pile, and exactly the feature that must not separate terrain from
+an object.
+
+It is not the elimination that was predicted. 87.3% of the *remaining* false
+positives are still pile-related, down from 90.8%. The residue is most likely
+toe cells, where a pile meets flat grade and one cell holds both surfaces. That
+is the next lever.
+
+Getting there took four attempts, each failing differently and informatively —
+the sequence is in [docs/JOURNAL.md](docs/JOURNAL.md), along with the rest of
+the build.
 
 ## Pipeline B — bootstrap
 
