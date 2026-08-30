@@ -262,3 +262,82 @@ detector encodes as a size prior.
 
 Which is the argument for Pipeline B, stated as a measurement rather than an
 assertion.
+
+---
+
+## 12. Offline-Poly made things worse, and the ablation says why
+
+Stage one of Pipeline B is `OfflinePoly`, which is learning-free and consumes
+*final tracklets from arbitrary upstream trackers* — exactly what Pipeline A
+emits. It is Tracking-By-Tracking, so it wants more than one source. Pipeline A
+can supply a second for free: **run the association backwards through time.**
+Births and deaths swap ends, gating resolves differently around occlusions, and
+fragments break in different places. The two runs are genuinely different — 70
+tracklets forward, 68 backward, and the backward pass has better ATE (0.347 vs
+0.365) but slightly worse precision.
+
+First interop snag: the shared CSV schema is not quite shared. `sitegen truth`
+writes `cls` as a class *name*; `OfflinePoly` parses it as an integer and dies
+with `invalid numeric field: object`. Refinery now emits `0`.
+
+Then the result, which was not the expected one:
+
+| | fwd only | +OfflinePoly (1 src, ego) | +OfflinePoly (2 src, no ego) | +OfflinePoly (2 src, ego) |
+| --- | --- | --- | --- | --- |
+| TP | **1552** | 1449 | **1572** | 1233 |
+| FP | **824** | 942 | 918 | 1257 |
+| precision | **0.653** | 0.606 | 0.631 | 0.495 |
+| recall | 0.647 | 0.604 | **0.655** | 0.514 |
+| F1 | **0.650** | 0.605 | 0.643 | 0.504 |
+| ATE | **0.365** | 0.641 | 0.387 | 0.472 |
+| ASE | **0.576** | 0.765 | 0.891 | 0.871 |
+| AOE | 0.750 | 0.697 | **0.670** | 0.837 |
+
+Three things fall out of that:
+
+**`--ego` corner-aligned correction is actively harmful here** — ATE 0.365 →
+0.641 with one source. It aligns *corners*, and corners are a function of yaw
+and size, which are the two things Pipeline A gets wrong. Correcting position
+using a bad heading moves the box the wrong way. Turn it off.
+
+**Multi-source fusion genuinely works.** Two sources recover 20 true positives
+the forward pass missed (1572 vs 1552) and lift recall above either input.
+Running the same tracker backwards is a real second opinion, not a copy.
+
+**Heading improves and size degrades.** AOE 0.750 → 0.670, because Offline-Poly
+reasons about heading from *motion*, which beats PCA on a partial surface. ASE
+0.576 → 0.891, because its fusion adjusts box dimensions and our dimensions
+were the unreliable input.
+
+The pattern is consistent: **Offline-Poly improves what it can derive from
+trajectory and degrades what it must take on faith from the boxes.** It is not
+broken — it is being fed inputs that violate its assumptions. It was designed
+downstream of `CenterPillars`, a detector that emits well-formed boxes with
+meaningful yaw.
+
+Which is the finding worth having: **you cannot skip stage B by chaining more
+learning-free refinement.** The missing information is a size and shape prior,
+and only a trained model carries one.
+
+## 13. The student, trained on the pipeline's own output
+
+No changes to `CenterPillars.py`. Its `SweepDataset` already reads
+
+    <root>/<split>/<log>/<timestamp>.npz
+      points, boxes, labels, num_interior_pts
+
+so that layout is the interface, and `scripts/to_centerpillars.py` writes it:
+sitegen's `.bin` sweeps are already float32 x,y,z,i in the sensor frame, and
+only the pseudo-label boxes have to be moved map → sensor.
+
+Two choices in the adapter worth stating:
+
+- **Interleaved val split**, every fifth frame, not a tail split. The scene has
+  distinct phases — dig, walk, dig — and a tail split would validate on a
+  regime the model never trained on.
+- **Boxes with fewer than five interior returns are dropped**: 676 of 2376. A
+  pseudo-label fitted to four points is noise, and teaching a detector to
+  reproduce it is worse than not teaching it at all.
+
+That leaves 480 train and 120 val sweeps carrying 1700 boxes — none of them
+human-labelled, all of them Pipeline A's own output.

@@ -35,6 +35,7 @@ def main() raises:
     var accel_var = 1.5
     var measurement_var = 0.25
     var use_terrain = True
+    var reverse = False
     var i = 3
     while i + 1 < len(args):
         if args[i] == "--accel-var":
@@ -43,6 +44,8 @@ def main() raises:
             measurement_var = Float64(String(args[i + 1]))
         elif args[i] == "--terrain":
             use_terrain = args[i + 1] == "on"
+        elif args[i] == "--reverse":
+            reverse = args[i + 1] == "on"
         i += 2
 
     var poses = read_poses(work + "/tf.csv")
@@ -126,7 +129,30 @@ def main() raises:
 
     print("raw detections:", total_dets)
 
-    var tracks = associate(per_frame, frame_times)
+    # A second, genuinely different tracklet set: associate backwards through
+    # time. Births and deaths swap ends, gating resolves differently around
+    # occlusions, and fragments break in different places -- which is exactly
+    # the multi-source input Offline-Poly's tracking-by-tracking stage wants.
+    # Times are mirrored so they stay ascending for the smoother, then mirrored
+    # back on the way out.
+    var ordered = List[List[Detection]]()
+    var ordered_times = List[Float64]()
+    var span = frame_times[len(frame_times) - 1]
+    if reverse:
+        for f in range(len(per_frame) - 1, -1, -1):
+            var flipped = List[Detection]()
+            for d in range(len(per_frame[f])):
+                var det = per_frame[f][d]
+                det.t = span - det.t
+                flipped.append(det)
+            ordered.append(flipped^)
+            ordered_times.append(span - frame_times[f])
+    else:
+        for f in range(len(per_frame)):
+            ordered.append(per_frame[f].copy())
+            ordered_times.append(frame_times[f])
+
+    var tracks = associate(ordered, ordered_times)
     var kept = 0
     var handle = open(out_path, "w")
     handle.write("track_id,cls,t,x,y,z,w,l,h,vx,vy,theta,conf\n")
@@ -147,10 +173,11 @@ def main() raises:
             if dt > 0.0:
                 vx = (track.obs_x[hi] - track.obs_x[lo]) / dt
                 vy = (track.obs_y[hi] - track.obs_y[lo]) / dt
+            var stamp = span - track.times[k] if reverse else track.times[k]
             handle.write(
                 String(track.id)
-                + ",object,"
-                + String(track.times[k])
+                + ",0,"
+                + String(stamp)
                 + ","
                 + String(track.obs_x[k])
                 + ","

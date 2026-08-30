@@ -1,0 +1,55 @@
+# CenterPillars trained on Pipeline A's pseudo-labels over a sitegen scene.
+# Nothing human-labelled is involved: the supervision is the cold-start
+# pipeline's own output, and the oracle is only ever read by the scorer.
+run_name: sitegen_bootstrap
+
+data:
+  root: /private/tmp/claude-501/-Users-mseritan-dev-agentic-explore-py/080c260a-21e9-4779-ae67-c359b40a55f9/scratchpad/cp-data
+  max_points: 20000        # a sitegen sweep is ~9.5k points; this never bites
+  num_workers: 2
+  augment: true
+
+classes:                   # one class -- a cold-start labeler has no names
+  OBJECT: [OBJECT]
+
+model:
+  # A job site is smaller than an AV scene but the machine walks, so the map
+  # grows. +/-60 m covers both stockpiles and the whole haul road.
+  x_range: [-60.0, 60.0]
+  y_range: [-60.0, 60.0]
+  z_range: [-6.0, 6.0]
+  pillar_size: 0.4         # 300 x 300 pillar grid
+  pillar_feat_dim: 32
+  backbone_channels: [32, 64, 128]
+  backbone_layers: [2, 2, 2]
+  backbone_strides: [2, 2, 2]
+  neck_stride: 2
+  neck_channels: 64
+  head_channels: 64
+  max_objs: 100
+
+targets:
+  min_radius: 2
+  gaussian_overlap: 0.1
+
+postprocess:
+  score_thresh: 0.1
+  max_dets: 100
+  nms_radius: {OBJECT: 1.5}
+
+train:
+  epochs: 20
+  batch_size: 4
+  lr: 1.0e-3
+  weight_decay: 1.0e-2
+  warmup_epochs: 1
+  final_lr_ratio: 0.05
+  grad_clip: 10.0
+  reg_weight: 0.25
+  device: auto
+  amp: false
+  seed: 0
+  log_every: 40
+
+eval:
+  dist_thresholds: [0.5, 1.0, 2.0, 4.0]
