@@ -391,3 +391,43 @@ possible until round one exists to disagree with.
 **Net for one round**: better at describing objects, no better at finding them,
 and worse at not inventing them. Exactly the shape of result that says what to
 do next rather than that the approach works.
+
+## 15. The filter I expected to work is the weakest one
+
+§14 ended with "round two needs its labels filtered — by teacher/student
+agreement, by track stability, or by driving the terrain stage harder". Three
+candidates, so before retraining on any of them they were measured directly
+against the oracle. Label quality *is* the prediction of round-two quality, and
+it costs six minutes less than a training run to check.
+
+| filter | rows | precision | recall | F1 | ASE | AOE |
+| --- | --- | --- | --- | --- | --- | --- |
+| baseline (unfiltered) | 2376 | 0.653 | **0.647** | 0.650 | 0.576 | 0.750 |
+| teacher/student agreement | 1879 | 0.673 | 0.527 | 0.591 | 0.502 | 0.668 |
+| **track motion** (path ≥ 4 m) | 1518 | **0.865** | 0.547 | **0.670** | 0.560 | 0.724 |
+| both | 1122 | **0.942** | 0.440 | 0.600 | 0.480 | 0.632 |
+
+**Agreement — the one I expected to work — is the weakest.** It lifts precision
+by two points, 0.653 → 0.673, and costs twelve points of recall. In hindsight
+it could not have worked: the student was *trained on* those labels, so it
+corroborates the teacher's systematic errors rather than exposing them. That is
+the §14 amplification result seen from the other side — a student that turned
+29.5% stockpile rows into 37.4% is not an independent witness.
+
+**Motion works, and the reason is physical.** A phantom track on a stockpile is
+an artifact of which slivers happened to survive ground removal in a given
+sweep, so it does not persist and it does not travel: median path length
+**0.75 m**, against **8.26 m** for real objects. Filtering on it drops false
+positives 824 → 205, a 75% cut, and *raises* label F1 above the unfiltered
+teacher.
+
+Combining both gives **94.2% label precision** at 0.440 recall — 65 false
+positives in the entire scene. Whether that beats 86.5% precision at 0.547
+recall as training data is exactly the question a self-training loop has to
+answer, and the usual answer is that precision wins: a false positive teaches
+the student something wrong, while a missing label only teaches it less.
+
+**The lesson is procedural, not technical.** Measuring three candidate filters
+against the oracle took one script; training three students to find out would
+have taken twenty minutes and produced a muddier answer, because a training run
+conflates label quality with optimisation noise. Score the labels first.
