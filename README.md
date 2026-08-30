@@ -174,43 +174,80 @@ Getting here took six attempts, each failing differently and informatively. The
 sequence is in [docs/JOURNAL.md](docs/JOURNAL.md), along with the rest of the
 build.
 
-## Pipeline B — bootstrap, round one
+## Pipeline B — the bootstrap loop
 
 ```
-A's pseudo-labels → to_centerpillars.py → CenterPillars.py (train)
+A's pseudo-labels → filter → to_centerpillars.py → CenterPillars.py (train)
   → predict_sitegen.py (infer) → the same association + RTS smoothing → score
 ```
 
 No changes to `CenterPillars.py`. Its `SweepDataset` already reads
 `<root>/<split>/<log>/<ts>.npz`, so that layout is the interface;
 `scripts/to_centerpillars.py` writes it and `scripts/predict_sitegen.py` runs
-the checkpoint using CenterPillars as a library. 480 train / 120 val sweeps,
-1700 boxes, **none human-labelled**.
-
-Scored against the oracle through the *same* tracker the teacher gets:
+the checkpoint using CenterPillars as a library. Nothing human-labelled enters
+at any point.
 
 | | TP | FP | precision | recall | F1 | ATE | ASE | AOE |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| **A — teacher** | 1552 | 824 | **0.653** | 0.647 | **0.650** | **0.365** | 0.576 | 0.750 |
-| B — student @0.2 | 1561 | 1450 | 0.518 | **0.650** | 0.577 | 0.366 | 0.530 | 0.620 |
-| B — student @0.4 | 1269 | 625 | 0.670 | 0.529 | 0.591 | 0.391 | **0.453** | **0.553** |
+| A — teacher (round 0) | 1552 | 824 | 0.653 | 0.647 | 0.650 | **0.365** | 0.576 | 0.750 |
+| B — round 1, unfiltered | 1424 | 953 | 0.599 | 0.593 | 0.596 | 0.387 | 0.498 | 0.579 |
+| **B — round 2, filtered** | **1574** | **136** | **0.921** | **0.656** | **0.766** | 0.397 | 0.514 | 0.630 |
 
-**The prediction held.** ASE and AOE improve at every threshold — 0.576 → 0.453
-and 0.750 → 0.553. AOE is the one that matters: 0.750 was indistinguishable
-from a coin flip against a random baseline of 0.785, and 0.553 is genuinely
-informative. One distillation round bought a heading estimator where geometry
-structurally had none.
+**Round two beats the teacher on every axis except ATE** — more true positives,
+83% fewer false positives, better size and heading. But the curve is not
+monotonic, and that is the point:
 
-**F1 never beats the teacher**, and the measurement says why: the teacher's 824
-false positives are labelled as positives in the student's training set, and
-the student amplified them — 29.5% of teacher labels sit on a stockpile, 37.4%
-of student output does. That is pseudo-label error propagation, and it is why
-this is a loop rather than a step. Round two needs its labels filtered first,
-by teacher/student agreement or track stability.
+```
+round 0  (geometry only)      F1 0.650
+round 1  (unfiltered labels)  F1 0.596   <- regression
+round 2  (filtered labels)    F1 0.766
+```
+
+**Round one made things worse.** Trained on the teacher's raw output it
+*amplified* the systematic error — 29.5% of teacher rows sit on a stockpile,
+37.4% of round-one output did. The label filter is not a refinement on the
+loop; it is what makes the loop work at all.
+
+### The filter, and a negative result
+
+Three candidates were scored against the oracle *before* training on any of
+them, because label quality predicts student quality and costs six minutes less
+to measure:
+
+| filter | rows | precision | recall | F1 |
+| --- | --- | --- | --- | --- |
+| baseline (unfiltered) | 2376 | 0.653 | **0.647** | 0.650 |
+| teacher/student agreement | 1879 | 0.673 | 0.527 | 0.591 |
+| **track motion** (path ≥ 4 m) | 1518 | **0.865** | 0.547 | **0.670** |
+| both | 1122 | **0.942** | 0.440 | 0.600 |
+
+Agreement — the obvious choice — is the **weakest**. The student was trained on
+those labels, so it corroborates the teacher's systematic errors instead of
+exposing them. Motion works, and physically: a stockpile phantom is an artifact
+of which slivers survived ground removal in one sweep, so it neither persists
+nor travels — median path **0.75 m** against **8.26 m** for real objects.
+
+### The result worth reading twice
+
+```
+training labels   precision 0.865   recall 0.547
+student output    precision 0.921   recall 0.656
+```
+
+The student is **better than its own supervision on both axes**. It recovered
+objects the filter discarded and rejected false positives the filter admitted.
+Below some label-precision threshold a self-training loop amplifies its own
+errors; above it, the loop compounds. Somewhere between 0.653 and 0.865 is
+where this one flips.
+
+More precision is not always better: the `both` filter had cleaner labels
+(0.942) and produced a *worse* student (F1 0.737), having thrown away a third
+of the training rows to get there.
 
 Still to wire: `OfflinePoly` sits at the right place but degrades size (see the
 journal), and `TrackPermanence` / `LabelFormer` / `GroundingDino` need domain
-checkpoints.
+checkpoints. AOE at 0.630 is the clearest target — `LabelFormer` refines a
+whole trajectory rather than a frame, which is what heading needs.
 
 ## Layout
 

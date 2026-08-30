@@ -431,3 +431,76 @@ the student something wrong, while a missing label only teaches it less.
 against the oracle took one script; training three students to find out would
 have taken twenty minutes and produced a muddier answer, because a training run
 conflates label quality with optimisation noise. Score the labels first.
+
+## 16. Round two: the loop closes
+
+Retrained on the motion-filtered labels, everything else identical — same
+architecture, same 20 epochs, same tracker, same scorer.
+
+| | TP | FP | precision | recall | F1 | ATE | ASE | AOE |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| A — teacher (round 0) | 1552 | 824 | 0.653 | 0.647 | 0.650 | **0.365** | 0.576 | 0.750 |
+| B — round 1, unfiltered | 1424 | 953 | 0.599 | 0.593 | 0.596 | 0.387 | 0.498 | 0.579 |
+| **B — round 2, motion @0.2** | **1574** | **136** | **0.921** | **0.656** | **0.766** | 0.397 | 0.514 | 0.630 |
+| B — round 2, motion @0.3 | 1450 | 102 | 0.934 | 0.604 | 0.734 | 0.386 | 0.483 | 0.602 |
+| B — round 2, both @0.2 | 1468 | 114 | 0.928 | 0.612 | 0.737 | 0.401 | 0.473 | 0.594 |
+| B — round 2, both @0.4 | 1030 | 42 | 0.961 | 0.429 | 0.593 | 0.399 | 0.376 | 0.459 |
+
+**Round two beats the teacher on every axis except ATE.** More true positives
+(1574 vs 1552), 83% fewer false positives (136 vs 824), better precision,
+better recall, better size, better heading. F1 0.650 → **0.766**, +18%.
+
+The curve across rounds is the shape worth showing, because it is not
+monotonic:
+
+```
+round 0  (geometry only)        F1 0.650
+round 1  (unfiltered labels)    F1 0.596   <- regression
+round 2  (filtered labels)      F1 0.766
+```
+
+Round one made things worse. The filter is not a refinement on the loop; it is
+the thing that makes the loop work at all.
+
+**The result that matters is not the F1 number.** It is this:
+
+```
+training labels   precision 0.865   recall 0.547
+student output    precision 0.921   recall 0.656
+```
+
+The student is **better than its own supervision on both axes**. It did not
+merely reproduce the filtered labels — it recovered objects the filter had
+thrown away, and rejected false positives the filter had let through. Given
+clean enough examples, the model's inductive bias works *for* you: it learns
+what an object looks like and then finds more of them than it was shown.
+
+That is the exact opposite of round one, where 29.5% stockpile rows in became
+37.4% stockpile rows out. Same architecture, same data, same everything except
+label precision. **Below some label-precision threshold a self-training loop
+amplifies its own errors; above it, the loop compounds.** Somewhere between
+0.653 and 0.865 is where this one flips.
+
+**More precision is not always better.** The `both` filter had cleaner labels
+(0.942 vs 0.865) and produced a worse student (F1 0.737 vs 0.766), because it
+threw away a third of the training rows to get there. There is an optimum, and
+it is not at the end of the axis.
+
+**What is still not fixed.** ATE is the one metric the teacher wins, 0.365 vs
+0.397 — geometry localises a cluster centroid slightly better than a heatmap
+peak regresses one. And AOE at 0.630 is better than the coin-flip 0.750 but
+still far from useful; `LabelFormer`, which refines a whole trajectory rather
+than a frame, is the stage aimed at exactly that.
+
+## 17. A note on the infrastructure
+
+Four background training runs were killed by the environment partway through —
+at 8, 11, and twice more — including a bare `sleep 180; tail` progress check,
+which is what identified it as a background-task constraint rather than
+anything about training. Moving the runs to the foreground with an explicit
+timeout fixed it immediately.
+
+Worth recording because the first two kills produced *checkpoints*, at 8 and 11
+epochs. Comparing one of those against round one's twenty would have been an
+invisible confound — the kind of thing that produces a number nobody can
+reproduce later.
