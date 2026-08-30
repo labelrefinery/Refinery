@@ -1,0 +1,21 @@
+[workspace]
+name = "refinery"
+version = "0.1.0"
+authors = ["Marius Seritan <marius@seritan.net>"]
+description = "Cold-start and bootstrap auto-labeling pipelines over sitegen scenes"
+preview = ["pixi-build"]
+channels = [
+    "https://conda.modular.com/max-nightly",
+    "https://repo.prefix.dev/modular-community",
+    "conda-forge",
+]
+platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
+
+[dependencies]
+mojo = "==1.0.0"
+hungarian-mojo = { git = "https://github.com/labelrefinery/Hungarian.mojo.git", rev = "f20267c62fcfbf65b40beaaee7e9801f341ebf93" }
+kalman-mojo = { git = "https://github.com/labelrefinery/Kalman.mojo.git", rev = "76bcbfff125237108cb218d8f277eab91749c354" }
+
+[tasks]
+format = { cmd = "mojo format src", description = "Format all Mojo sources" }
+check = { cmd = "mojo run -I src src/main.mojo", description = "Compile-check the pipeline (prints usage)" }

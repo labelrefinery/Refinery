@@ -1,0 +1,131 @@
+# Refinery
+
+Auto-labeling pipelines assembled from the labelrefinery components, run over
+[sitegen](https://github.com/labelrefinery/sitegen) scenes and scored against
+their held-out oracle.
+
+This repo is **wiring, not algorithms**. Every stage already exists as its own
+repo; what lives here is the assembly, and the A-versus-B comparison that
+answers whether labels actually improve.
+
+## Pipeline A — cold start
+
+No labels. No checkpoints. No training. Every stage is geometry or classical
+estimation, so it runs on a scene it has never seen:
+
+```
+sitegen MCAP
+  → proprioception self-mask     forward kinematics from /ego/joint_states
+  → ground removal               per-cell minimum, not a global plane
+  → voxel clustering             26-neighbourhood connected components
+  → oriented box fit             PCA heading in the ground plane
+  → gated association            Hungarian.mojo  (solve_gated)
+  → RTS smoothing                Kalman.mojo     (smooth_track)
+  → tracks.csv
+```
+
+The output is the schema `OfflinePoly` reads, so the next stage is a pipe.
+
+**The free supervision.** The ego publishes its own joint angles, so forward
+kinematics puts its boom, stick and bucket exactly where they are and their
+returns come out before anything else runs. About an eighth of every sweep is
+the machine looking at itself; a clusterer handed those points invents a large
+object welded to the sensor. Every pitch joint turns about the house's own
+y-axis, so the angles add down the chain and each link is one rotation from the
+house frame — the whole FK is twenty lines.
+
+**Why the gate matters.** `solve_gated` leaves a track unmatched rather than
+binding it to the cheapest available detection. Without it, a truck leaving the
+scene gets welded to a worker thirty metres away, because that is still the
+optimal complete assignment.
+
+**Why offline.** Two stages here are only possible as a batch job. Track birth
+filtering — dropping anything seen fewer than four times — requires knowing how
+long a track lived, which an online tracker cannot know at birth. And the RTS
+backward pass conditions every frame on the whole trajectory, so the first
+detections, made when an object was distant and carried a handful of returns,
+inherit the accuracy of the later close ones.
+
+## Running it
+
+```sh
+# one-time: export the scene into the formats the stages read
+sitegen tf     site.mcap --out work/tf.csv
+sitegen joints site.mcap --out work/joints.csv
+sitegen sweeps site.mcap --out work/sweeps
+
+pixi run mojo run -I src src/main.mojo work work/pipeline_a.csv
+sitegen score work/pipeline_a.csv --truth work/truth.csv --exclude grade_stake
+```
+
+Dependencies come from the registry, one command:
+
+```sh
+pixi shelf add hungarian-mojo kalman-mojo
+```
+
+## Where Pipeline A stands
+
+600 frames, 5.7M points, the default seed-1 scene. Runs in about 90 seconds.
+
+| | |
+| --- | --- |
+| precision | 0.481 |
+| recall | 0.686 |
+| F1 | 0.565 |
+| ATE | 0.369 m |
+| ASE | 0.566 |
+| AOE | 0.817 rad |
+| ID switches | 9 |
+
+Read those numbers as a baseline to beat, and note *which* ones are bad,
+because they say exactly what the learned stages are for:
+
+**ATE is already good.** 37 cm on objects the pipeline was never told about.
+Geometry finds where things are.
+
+**ASE and AOE are bad, and structurally so.** A cluster is the *visible
+surface* of an object, not the object: a truck seen from one side has no far
+side, so the fitted box is systematically small, and PCA on a partial surface
+gives a heading that is frequently 90° out. No amount of tuning fixes this,
+because the information is not in a single sweep. It is in the *trajectory* —
+which is precisely what `LabelFormer` refines and what a trained detector
+learns as a size prior. This is the clearest argument in the repo for why
+stage B exists.
+
+**Precision is dragged down by the ontology, not by the clustering.** Most
+false positives are stockpiles. They are genuinely above ground and genuinely
+clustered, and a geometric pipeline is right to find them — but the oracle
+calls them terrain, not actors. That is the terrain-is-a-surface-not-a-box
+problem, and the fix is `Stone.mojo` classifying them as traversable terrain
+before clustering runs, not a better clusterer.
+
+**Recall depends entirely on what you count.** With grade stakes included it is
+0.27; without them, 0.69. A stake is 50 mm square and collects a couple of
+returns per sweep, so leaving it in measures the LiDAR rather than the labeler.
+`--exclude grade_stake` is the honest default.
+
+## Pipeline B — bootstrap
+
+Not built yet. The loop:
+
+```
+A's pseudo-labels → CenterPillars.py (train) → CenterPillars.mojo (infer)
+  → OfflinePoly.mojo (offline MOT) → TrackPermanence.mojo (occlusion recovery)
+  → LabelFormer.mojo (trajectory refinement) → rescore → retrain
+```
+
+`GroundingDino.mojo` covers open-vocabulary discovery for whatever the detector
+has no class for. The number that makes the case is one curve: label quality
+against round, with the oracle as the ceiling.
+
+## Layout
+
+- `src/refinery/io.mojo` — sweeps, poses, joints; the sweep reader lifts points
+  into the map frame in the same pass that decodes them
+- `src/refinery/pipeline.mojo` — self-mask, detection, association, smoothing
+- `src/main.mojo` — CLI
+
+## License
+
+Apache 2.0.
