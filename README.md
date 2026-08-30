@@ -66,42 +66,52 @@ pixi shelf add hungarian-mojo kalman-mojo
 
 ## Where Pipeline A stands
 
-600 frames, 5.7M points, the default seed-1 scene. Runs in about 90 seconds.
+600 frames, 5.8M points, the default seed-1 scene (sitegen 0.2.0), scored
+class-agnostically at a 2 m centre-distance threshold with `--exclude
+grade_stake`. Runs in about 90 seconds.
 
-| | |
-| --- | --- |
-| precision | 0.481 |
-| recall | 0.686 |
-| F1 | 0.565 |
-| ATE | 0.369 m |
-| ASE | 0.566 |
-| AOE | 0.817 rad |
-| ID switches | 9 |
+| | | |
+| --- | --- | --- |
+| precision | 0.415 | of what it labeled, how much was real |
+| recall | 0.648 | of what was there, how much it found |
+| F1 | 0.506 | |
+| ATE | 0.379 m | mean centre error over true positives |
+| ASE | 0.575 | `1 - IoU` once centred and aligned: pure size error |
+| AOE | 0.746 rad | heading error, folded by pi, so the range is [0, pi/2] |
+| ID switches | 16 | how often a truth object's assigned track id changed |
 
 Read those numbers as a baseline to beat, and note *which* ones are bad,
 because they say exactly what the learned stages are for:
 
-**ATE is already good.** 37 cm on objects the pipeline was never told about.
+**ATE is already good.** 38 cm on objects the pipeline was never told about.
 Geometry finds where things are.
 
-**ASE and AOE are bad, and structurally so.** A cluster is the *visible
-surface* of an object, not the object: a truck seen from one side has no far
-side, so the fitted box is systematically small, and PCA on a partial surface
-gives a heading that is frequently 90° out. No amount of tuning fixes this,
-because the information is not in a single sweep. It is in the *trajectory* —
-which is precisely what `LabelFormer` refines and what a trained detector
-learns as a size prior. This is the clearest argument in the repo for why
-stage B exists.
+**ASE and AOE are bad, and structurally so.** AOE deserves reading carefully:
+the scale runs 0 to pi/2, and a *uniformly random* heading averages 0.785 rad.
+At 0.746 the PCA heading is statistically indistinguishable from a coin flip —
+it carries no information. ASE 0.575 means an aligned IoU of 0.425, so the
+boxes disagree on most of their volume even after being handed the right
+position and heading.
 
-**Precision is dragged down by the ontology, not by the clustering.** Most
-false positives are stockpiles. They are genuinely above ground and genuinely
+Both have one cause, and it is not the code: a cluster is an object's *visible
+surface*, not the object. A truck lit from one side has no far side in the
+cloud, so the box comes out systematically short in depth and the principal
+axis follows the illuminated face rather than the vehicle. No tuning fixes
+this, because the information is not in a single sweep. It is in the
+*trajectory* — which is precisely what `LabelFormer` refines and what a trained
+detector encodes as a size prior. This is the clearest argument in the repo for
+why stage B exists.
+
+**Precision is dragged down by the ontology, not by the clustering.** Measured:
+**92.6% of false positives sit within 3 m of a stockpile toe**, from 33
+persistent phantom tracks with a median footprint of 4.0 x 2.2 x 1.5 m. They are genuinely above ground and genuinely
 clustered, and a geometric pipeline is right to find them — but the oracle
 calls them terrain, not actors. That is the terrain-is-a-surface-not-a-box
 problem, and the fix is `Stone.mojo` classifying them as traversable terrain
 before clustering runs, not a better clusterer.
 
 **Recall depends entirely on what you count.** With grade stakes included it is
-0.27; without them, 0.69. A stake is 50 mm square and collects a couple of
+0.26; without them, 0.65. A stake is 50 mm square and collects a couple of
 returns per sweep, so leaving it in measures the LiDAR rather than the labeler.
 `--exclude grade_stake` is the honest default.
 
