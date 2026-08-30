@@ -249,6 +249,34 @@ journal), and `TrackPermanence` / `LabelFormer` / `GroundingDino` need domain
 checkpoints. AOE at 0.630 is the clearest target — `LabelFormer` refines a
 whole trajectory rather than a frame, which is what heading needs.
 
+## Looking at the labels
+
+Scoring tells you a stage got worse; it does not tell you *where*. For that,
+write the labels into their own MCAP and play them against the recording:
+
+```sh
+sitegen overlay round0.csv round1.csv round2.csv \
+    --out labels.mcap --scene site.mcap
+
+foxglove site.mcap labels.mcap        # Foxglove merges local files into one timeline
+```
+
+Each CSV becomes a `/pred/<name>` topic of cuboids with billboarded track ids,
+one categorical colour each, independently toggleable beside
+`/ground_truth/actors`. The scene file is never modified — three rounds of
+labels come to 471 KB against an 86 MB recording, so one scene serves any
+number of runs.
+
+Prebuilt, if you would rather not run anything:
+
+```sh
+curl -O https://samples.magmalake.org/sitegen/v0.2.0/site_seed1_60s.mcap
+curl -O https://samples.magmalake.org/sitegen/v0.2.0/labels_rounds.mcap
+```
+
+Scrub to t≈25 s: round 0 has objects standing on the stockpile, round 2 does
+not. That is the 824 → 136 false-positive drop, visible rather than tabulated.
+
 ## Layout
 
 - `src/refinery/io.mojo` — sweeps, poses, joints; the sweep reader lifts points
