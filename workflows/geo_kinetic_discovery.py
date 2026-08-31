@@ -1,9 +1,28 @@
-"""Produce the first labels for a scene nothing has ever been trained on.
+"""Discover object instances from geometry and motion alone.
 
-There is no model, no checkpoint and no class list. Every stage is geometry or
-classical estimation, so this runs on a site it has never seen and on object
-classes nobody has named yet -- which is the case that matters, because a
-detector trained on public AV data has never heard of an excavator boom.
+No model, no checkpoint, no class list -- and, importantly, **no class names
+out either**. What this produces is *instances*: a discrete something is here,
+this is its box, this is its trajectory. The `cls` column is `0` for every row,
+and honestly so.
+
+What geometry and motion can actually settle:
+
+  - **terrain vs not-terrain** -- Stone's connectivity fill, free and reliable
+  - **instances** -- connected clusters standing on that terrain
+  - **motion attributes** -- static vs moving, path length, velocity. The
+    strongest signal here by some distance: it is the label filter that decides
+    whether the downstream self-training loop compounds or degrades.
+  - **a size bucket** -- measured on this scene, machine-sized and
+    person-sized boxes differ by two and a half orders of magnitude (median
+    69.3 m3 against 0.13 m3), and a 5 m3 split separates them 97.5% of the time
+  - **the ego's own parts, exactly** -- forward kinematics knows which rigid
+    body is the boom and which is the bucket. The one place geometry hands you
+    true named classes, and it hands them over free.
+
+What it can never settle: excavator against dozer against loader; worker
+against any person-shaped object; stockpile against spoil pile, where the
+discriminator is *intent* and simply is not present in a point cloud. Naming
+needs pixels and a model that has seen the world -- see `bootstrap_new_classes`.
 
     export -> terrain (Stone) -> cluster -> associate (Hungarian)
            -> smooth (Kalman RTS) -> filter -> labels
@@ -25,7 +44,7 @@ from . import steps
 from .context import RunContext
 
 
-def bootstrap_new_classes(
+def geo_kinetic_discovery(
     scene: Path,
     work: Path,
     *,
@@ -36,8 +55,8 @@ def bootstrap_new_classes(
     verbose: bool = True,
 ) -> dict[str, Any]:
     """Returns the produced artefacts and, when an oracle is given, the score."""
-    ctx = RunContext(work, "bootstrap_new_classes", verbose=verbose)
-    ctx.log(f"\n{'=' * 64}\nbootstrap_new_classes  {scene.name}\n{'=' * 64}")
+    ctx = RunContext(work, "geo_kinetic_discovery", verbose=verbose)
+    ctx.log(f"\n{'=' * 64}\ngeo_kinetic_discovery  {scene.name}\n{'=' * 64}")
 
     steps.export_scene(ctx, scene, work)
 

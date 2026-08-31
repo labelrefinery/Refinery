@@ -1,6 +1,6 @@
 """Run a named workflow.
 
-    python -m workflows bootstrap_new_classes --scene site.mcap --work runs/a
+    python -m workflows geo_kinetic_discovery --scene site.mcap --work runs/a
     python -m workflows improve_offboard_model --scene site.mcap --work runs/a \
         --labels runs/a/labels.csv --round r1
 """
@@ -30,7 +30,7 @@ def main() -> None:
 
     common = dict(scene=args.scene, work=args.work, truth=args.truth,
                   min_path_m=args.min_path_m)
-    if args.workflow == "bootstrap_new_classes":
+    if args.workflow == "geo_kinetic_discovery":
         out = WORKFLOWS[args.workflow](**common)
     else:
         if args.labels is None:

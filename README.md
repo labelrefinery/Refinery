@@ -254,8 +254,8 @@ whole trajectory rather than a frame, which is what heading needs.
 The two pipelines are `workflows/`, parameterised and resumable:
 
 ```sh
-# no model, no checkpoint, no class list -- geometry only
-python -m workflows bootstrap_new_classes \
+# instances from geometry and motion; no class names out
+python -m workflows geo_kinetic_discovery \
     --scene site.mcap --work runs/a --truth runs/a/truth.csv
 
 # distil a detector from those labels and label again
@@ -271,7 +271,7 @@ workflow costs a second and touches nothing:
 · export_scene               skipped (unchanged)
 · geometric_labels           skipped (unchanged)
 ...
-bootstrap_new_classes: 0 steps ran, 7 skipped, 0s
+geo_kinetic_discovery: 0 steps ran, 7 skipped, 0s
 ```
 
 That is not just convenience. Durable-execution engines replay handlers, so
