@@ -1,5 +1,5 @@
-// Build Iceberg tables with icebird, staging bytes on local disk while the
-// metadata records the final public URLs.
+// Turn dataset Parquet into Iceberg tables, staging bytes on local disk while
+// the metadata records the final public URLs.
 //
 // Iceberg metadata stores absolute file locations. PyIceberg writes `file://…`
 // paths, which a browser cannot fetch, so the table has to be authored with the
@@ -10,18 +10,18 @@
 //   python scripts/datasets_from_mcap.py scene.mcap labels.mcap ./parquet
 //   node   scripts/datasets_publish.mjs  ./parquet ./stage
 //   for f in $(find stage -type f); do
-//     npx wrangler r2 object put "labelrefinery-samples/datasets/v0.1.0/${f#stage/}" \
+//     npx wrangler r2 object put "labelrefinery-samples/datasets/v0.2.0/${f#stage/}" \
 //       --file "$f" --remote
 //   done
 import { mkdir, writeFile, readFile, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { parquetReadObjects } from 'hyparquet'
+import { parquetMetadata, parquetReadObjects } from 'hyparquet'
 import { ByteWriter } from 'hyparquet-writer'
 import { fileCatalog, icebergAppend, icebergCreateTable } from 'icebird'
 
 // usage: node datasets_publish.mjs <parquet-dir> <stage-dir> [base-url]
 const [PARQUET_DIR, STAGE, BASE_ARG] = process.argv.slice(2)
-const BASE = BASE_ARG ?? 'https://samples.magmalake.org/datasets/v0.1.0'
+const BASE = BASE_ARG ?? 'https://samples.magmalake.org/datasets/v0.2.0'
 if (!PARQUET_DIR || !STAGE) {
   console.error('usage: node datasets_publish.mjs <parquet-dir> <stage-dir> [base-url]')
   process.exit(2)
@@ -59,58 +59,50 @@ const resolver = {
   },
 }
 
-const TRACKS = {
-  type: 'struct',
-  'schema-id': 0,
-  fields: [
-    { id: 1, name: 'instance_id', required: true, type: 'string' },
-    { id: 2, name: 'class', required: true, type: 'string' },
-    { id: 3, name: 'part', required: false, type: 'string' },
-    { id: 4, name: 't', required: true, type: 'double' },
-    { id: 5, name: 'x', required: true, type: 'double' },
-    { id: 6, name: 'y', required: true, type: 'double' },
-    { id: 7, name: 'z', required: true, type: 'double' },
-    { id: 8, name: 'w', required: true, type: 'double' },
-    { id: 9, name: 'l', required: true, type: 'double' },
-    { id: 10, name: 'h', required: true, type: 'double' },
-    { id: 11, name: 'theta', required: true, type: 'double' },
-    { id: 12, name: 'vx', required: false, type: 'double' },
-    { id: 13, name: 'vy', required: false, type: 'double' },
-    { id: 14, name: 'num_lidar_points', required: false, type: 'int' },
-  ],
+/** Iceberg schema derived from the Parquet, so there is no second copy to drift. */
+function schemaFromParquet(meta) {
+  const TYPES = {
+    DOUBLE: 'double',
+    FLOAT: 'float',
+    INT32: 'int',
+    INT64: 'long',
+    BYTE_ARRAY: 'string',
+    BOOLEAN: 'boolean',
+  }
+  const fields = []
+  let id = 1
+  for (const el of meta.schema) {
+    if (!el.type) continue // the root element carries no type
+    const type = TYPES[el.type]
+    if (!type) throw new Error(`unmapped parquet type ${el.type} for ${el.name}`)
+    fields.push({
+      id: id++,
+      name: el.name,
+      required: el.repetition_type === 'REQUIRED',
+      type,
+    })
+  }
+  return { type: 'struct', 'schema-id': 0, fields }
 }
 
-const LABELS = {
-  type: 'struct',
-  'schema-id': 0,
-  fields: [
-    { id: 1, name: 'dataset_name', required: true, type: 'string' },
-    { id: 2, name: 'instance_id', required: true, type: 'string' },
-    { id: 3, name: 'class', required: false, type: 'string' },
-    { id: 4, name: 't', required: true, type: 'double' },
-    { id: 5, name: 'x', required: true, type: 'double' },
-    { id: 6, name: 'y', required: true, type: 'double' },
-    { id: 7, name: 'z', required: true, type: 'double' },
-    { id: 8, name: 'w', required: true, type: 'double' },
-    { id: 9, name: 'l', required: true, type: 'double' },
-    { id: 10, name: 'h', required: true, type: 'double' },
-    { id: 11, name: 'theta', required: true, type: 'double' },
-    { id: 12, name: 'cls_conf', required: false, type: 'double' },
-    { id: 13, name: 'cls_source', required: false, type: 'string' },
-    { id: 14, name: 'producer', required: true, type: 'string' },
-  ],
-}
+async function build(name) {
+  const buf = await readFile(join(PARQUET_DIR, `${name}.parquet`))
+  const file = {
+    byteLength: buf.byteLength,
+    slice: (s, e) =>
+      buf.buffer.slice(buf.byteOffset + s, buf.byteOffset + (e ?? buf.byteLength)),
+  }
+  const schema = schemaFromParquet(parquetMetadata(buf.buffer.slice(
+    buf.byteOffset, buf.byteOffset + buf.byteLength)))
+  const records = await parquetReadObjects({ file })
 
-async function build(name, schema) {
-  const file = await readFile(join(PARQUET_DIR, `${name}.parquet`))
-  const records = await parquetReadObjects({
-    file: { byteLength: file.byteLength, slice: (s, e) => file.buffer.slice(file.byteOffset + s, file.byteOffset + (e ?? file.byteLength)) },
-  })
-  // hyparquet yields plain numbers; Iceberg `int` columns must be integers and
-  // nulls must stay null rather than becoming 0.
+  // Iceberg `int` columns must hold integers, and a null must stay null rather
+  // than being coerced to 0 -- for num_lidar_points the difference is
+  // "seen and got no returns" versus "no labelled sweep at this timestamp".
+  const ints = new Set(schema.fields.filter(f => f.type === 'int').map(f => f.name))
   for (const r of records) {
-    if (r.num_lidar_points !== null && r.num_lidar_points !== undefined) {
-      r.num_lidar_points = Math.round(r.num_lidar_points)
+    for (const k of ints) {
+      if (r[k] !== null && r[k] !== undefined) r[k] = Math.round(r[k])
     }
   }
 
@@ -118,11 +110,12 @@ async function build(name, schema) {
   const tableUrl = `${BASE}/${name}`
   await icebergCreateTable({ catalog, tableUrl, schema })
   await icebergAppend({ catalog, tableUrl, records })
-  console.log(`${name}: ${records.length} rows -> ${tableUrl}`)
-  return records.length
+  console.log(
+    `${name}: ${records.length} rows, ${schema.fields.length} columns -> ${tableUrl}`
+  )
 }
 
 await mkdir(STAGE, { recursive: true })
-await build('ground_truth_tracks', TRACKS)
-await build('labels', LABELS)
+await build('ground_truth_tracks')
+await build('labels')
 console.log(`\nstaged under ${STAGE}`)

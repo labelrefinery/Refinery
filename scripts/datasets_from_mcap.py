@@ -16,7 +16,6 @@ and carries no class at all, so labels.class is null -- see the note in main().
 """
 
 import math
-import struct
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -43,7 +42,7 @@ def split_entity_id(eid):
     return instance, cls, (part if dot else None)
 
 
-def read_actors(path):
+def read_actors(path, scene_name):
     """/ground_truth/actors -> rows keyed by (instance, class, part, t)."""
     rows = []
     with open(path, "rb") as f:
@@ -62,6 +61,7 @@ def read_actors(path):
                 instance, cls, part = split_entity_id(e.id)
                 rows.append(
                     {
+                        "dataset_name": scene_name,
                         "instance_id": instance,
                         "class": cls,
                         "part": part,
@@ -276,43 +276,10 @@ def read_labels(path):
     return rows
 
 
-TRACKS_SCHEMA = pa.schema(
-    [
-        pa.field("instance_id", pa.string(), nullable=False),
-        pa.field("class", pa.string(), nullable=False),
-        pa.field("part", pa.string()),
-        pa.field("t", pa.float64(), nullable=False),
-        pa.field("x", pa.float64(), nullable=False),
-        pa.field("y", pa.float64(), nullable=False),
-        pa.field("z", pa.float64(), nullable=False),
-        pa.field("w", pa.float64(), nullable=False),
-        pa.field("l", pa.float64(), nullable=False),
-        pa.field("h", pa.float64(), nullable=False),
-        pa.field("theta", pa.float64(), nullable=False),
-        pa.field("vx", pa.float64()),
-        pa.field("vy", pa.float64()),
-        pa.field("num_lidar_points", pa.int32()),
-    ]
-)
-
-LABELS_SCHEMA = pa.schema(
-    [
-        pa.field("dataset_name", pa.string(), nullable=False),
-        pa.field("instance_id", pa.string(), nullable=False),
-        pa.field("class", pa.string()),
-        pa.field("t", pa.float64(), nullable=False),
-        pa.field("x", pa.float64(), nullable=False),
-        pa.field("y", pa.float64(), nullable=False),
-        pa.field("z", pa.float64(), nullable=False),
-        pa.field("w", pa.float64(), nullable=False),
-        pa.field("l", pa.float64(), nullable=False),
-        pa.field("h", pa.float64(), nullable=False),
-        pa.field("theta", pa.float64(), nullable=False),
-        pa.field("cls_conf", pa.float64()),
-        pa.field("cls_source", pa.string()),
-        pa.field("producer", pa.string(), nullable=False),
-    ]
-)
+# The canonical shapes live in the registry module -- imported rather than
+# restated so the published tables cannot drift from what `register()` writes.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from workflows.datasets import LABELS_SCHEMA, TRACKS_SCHEMA  # noqa: E402
 
 
 def to_table(rows, schema):
@@ -322,9 +289,11 @@ def to_table(rows, schema):
 
 def main():
     scene, labels_mcap, out = sys.argv[1], sys.argv[2], Path(sys.argv[3])
+    # `site_seed1_60s.mcap` -> `site_seed1`, the dataset_name these rows carry.
+    scene_name = sys.argv[4] if len(sys.argv) > 4 else Path(scene).stem.rsplit("_", 1)[0]
 
     print("reading /ground_truth/actors …")
-    actors = read_actors(scene)
+    actors = read_actors(scene, scene_name)
     print(f"  {len(actors)} rows")
 
     print("reading /tf …")
