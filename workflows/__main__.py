@@ -26,12 +26,21 @@ def main() -> None:
     p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--score-thresh", type=float, default=0.2)
     p.add_argument("--corroborate", type=Path)
+    p.add_argument("--dino", type=Path, help="GroundingDino.mojo checkout")
+    p.add_argument("--max-calls", type=int, default=30)
     args = p.parse_args()
 
     common = dict(scene=args.scene, work=args.work, truth=args.truth,
                   min_path_m=args.min_path_m)
     if args.workflow == "geo_kinetic_discovery":
         out = WORKFLOWS[args.workflow](**common)
+    elif args.workflow == "bootstrap_new_classes":
+        if args.labels is None:
+            p.error("bootstrap_new_classes requires --labels")
+        out = WORKFLOWS[args.workflow](
+            scene=args.scene, work=args.work, labels=args.labels,
+            dino=args.dino, max_calls=args.max_calls, truth=args.truth,
+        )
     else:
         if args.labels is None:
             p.error("improve_offboard_model requires --labels")

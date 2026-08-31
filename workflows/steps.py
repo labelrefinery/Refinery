@@ -302,6 +302,49 @@ def student_labels(
     )
 
 
+def name_instances(
+    ctx: RunContext,
+    scene: Path,
+    labels: Path,
+    out: Path,
+    dino: Path,
+    prompt: str,
+    max_calls: int,
+    views_per_instance: int,
+) -> None:
+    """Camera + open-vocabulary detector naming, with a size-prior fallback."""
+
+    def action() -> dict[str, Any]:
+        stdout = ctx.run(
+            [
+                "uv", "run", "--project", str(SITEGEN), "python",
+                str(REPO / "scripts" / "name_instances.py"),
+                "--scene", str(scene), "--labels", str(labels), "--out", str(out),
+                "--dino", str(dino), "--prompt", prompt,
+                "--max-calls", str(max_calls),
+                "--views-per-instance", str(views_per_instance),
+            ],
+            cwd=REPO,
+        )
+        metrics: dict[str, Any] = {}
+        for line in stdout.splitlines():
+            if line.startswith("named_by "):
+                metrics = {
+                    k: int(v)
+                    for k, _, v in (f.partition("=") for f in line.split()[1:])
+                }
+        return metrics
+
+    ctx.step(
+        "name_instances",
+        inputs=[scene, labels],
+        outputs=[out],
+        params={"prompt": prompt, "max_calls": max_calls,
+                "views_per_instance": views_per_instance},
+        action=action,
+    )
+
+
 # ===----------------------------------------------------------------------===
 # Measurement
 # ===----------------------------------------------------------------------===
