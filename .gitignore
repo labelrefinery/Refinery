@@ -5,3 +5,6 @@ work/
 *.conda
 __pycache__/
 runs/
+
+# Credentials. Never commit.
+.env
