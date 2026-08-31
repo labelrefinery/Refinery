@@ -300,3 +300,51 @@ The current CSVs already carry the right columns; they are missing identity.
 Step 4 is the one to notice: the workflows already produce lineage, into a JSON
 file per run. This design does not add provenance tracking, it moves what exists
 somewhere queryable.
+
+---
+
+## What is published today
+
+Steps 1 and 3 are done, built from the **already-public MCAPs** rather than from
+a fresh pipeline run — `scripts/datasets_from_mcap.py` (MCAP → Parquet) then
+`scripts/datasets_publish.mjs` (Parquet → Iceberg). Both tables are live under
+`https://samples.magmalake.org/datasets/v0.1.0/` and are browsable in the page
+at <https://labelrefinery.org/datasets/>.
+
+| table | rows | source |
+| --- | --- | --- |
+| `ground_truth_tracks` | 9 000 | `/ground_truth/actors` + `/ground_truth/points` |
+| `labels` | 6 463 | `/pred/*`, three rounds |
+
+The tables are authored with their **public URLs baked into the metadata**.
+Iceberg records absolute file locations, and PyIceberg writes `file://` paths
+that a browser cannot fetch, so the Iceberg layer is written with
+[icebird](https://github.com/hyparam/icebird) against a resolver that maps the
+public prefix onto a local staging directory. Same library on both ends.
+
+**Three traps in `num_lidar_points`**, each of which yields plausible wrong
+numbers rather than an error:
+
+1. `/ground_truth/points` is published in the **`lidar` frame** while the boxes
+   are in `map`. Every sweep is transformed through that frame's `/tf` first.
+2. **Centroid matching does not work.** LiDAR sees only the face pointing at the
+   sensor, so an 8 m truck's return centroid sits metres off its box centre and
+   lands inside a neighbour. Containment against the oriented box decides.
+3. **The assignment must be per frame.** sitegen reuses numeric instance ids
+   between actors that are disjoint in time — ids 6 and 7 are `truck_a` until
+   t=39.9 and `truck_b` from t=40.0. A global majority vote gives both to
+   `truck_a`, after which every `truck_b` row reads zero returns and nothing
+   looks wrong. Post-fix check: `truck_b` 80 rows at median 143 returns against
+   `truck_a`'s 160 at 143.5.
+
+The column pays for itself at once: grade stakes never exceed **3** returns
+anywhere in the scene, workers sit at a median of **12**, trucks at **143**.
+That is the argument for `num_lidar_points >= 5` over `--exclude grade_stake`,
+now measured rather than asserted.
+
+**Known gaps in the published rows.** `labels.class`, `cls_conf` and
+`cls_source` are null throughout: the published labels MCAP is a visualisation
+artefact carrying geometry and a track id, with round encoded as colour and no
+class anywhere. `num_lidar_points` is known on 1 800 of 9 000 rows because the
+point oracle is 2 Hz against 10 Hz boxes — where a sweep exists, `0` means seen
+and got no returns; null elsewhere means unknown.
