@@ -21,6 +21,9 @@ stone-mojo = { git = "https://github.com/labelrefinery/Stone.mojo.git", rev = "9
 # and small frequent writes rather than table commits.
 sqlite-mojo = { git = "https://github.com/magmalake/sqlite.mojo" }
 libsqlite = ">=3.45,<4"
+# Durable execution: the executor is a Restate service, so a stage that dies
+# mid-run is retried from the journal rather than from the top.
+restate-mojo = { git = "https://github.com/millfolio/restate.mojo" }
 
 [tasks]
 format = { cmd = "mojo format src", description = "Format all Mojo sources" }
@@ -28,3 +31,7 @@ check = { cmd = "mojo run -I src src/main.mojo", description = "Compile-check th
 test-proc = { cmd = "mojo run -I src test/test_proc.mojo", description = "Subprocess helper tests" }
 test-opsdb = { cmd = "mojo run -I src test/test_opsdb.mojo", description = "Control-plane database tests" }
 test = { depends-on = ["test-proc", "test-opsdb"], description = "All Mojo tests" }
+build-executor = { cmd = "mojo build -I src src/executor.mojo -o build/executor", description = "Build the Restate executor service" }
+# Must run under `pixi run`: restate.mojo resolves librestatemojo from
+# $CONDA_PREFIX/lib, and falls back to a dev-relative path when it is unset.
+executor = { cmd = "./build/executor", depends-on = ["build-executor"], description = "Serve the Restate executor on :9080" }

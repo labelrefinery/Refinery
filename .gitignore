@@ -8,3 +8,5 @@ runs/
 
 # Credentials. Never commit.
 .env
+build/
+restate-data/
