@@ -125,6 +125,14 @@ def advance(mut app: App, inv: Invocation, params: Dict[String, String]) raises 
     var db = OpsDb(ops_path)
     if invocation_id.byte_length() == 0:
         invocation_id = db.new_invocation(scene, seed, work)
+    elif not db.invocation_exists(invocation_id):
+        # Almost always a caller pointing at a different ops.db than the one
+        # the invocation was created in. Every foreign key downstream would
+        # fail, identically, on every retry -- so say so and stop.
+        raise Error(
+            "invocation " + invocation_id + " is not in " + ops_path
+            + " -- pass ops= pointing at the database it was created in"
+        )
 
     var stages = build_stages(
         scene, work, sitegen, repo, min_path_m, seed, duration_s
@@ -201,6 +209,14 @@ def main() raises:
             var result = advance(app, inv, params)
             app.complete(inv, result)
         except e:
-            app.abandon(inv)
-            if not is_suspended(e):
+            if is_suspended(e):
+                app.abandon(inv)
+            else:
+                # Terminal, not retried. The driver is single-threaded, so an
+                # invocation that fails identically on every redelivery does
+                # not just fail -- it starves every other request behind it.
                 print("loop error:", e)
+                try:
+                    app.fail(inv, String(e))
+                except:
+                    app.abandon(inv)

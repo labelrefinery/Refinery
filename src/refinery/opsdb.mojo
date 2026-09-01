@@ -141,6 +141,13 @@ struct OpsDb(Movable):
         ref r = row.value()
         return r.text_val(0)
 
+    def invocation_exists(mut self, invocation_id: String) raises -> Bool:
+        var stmt = self.db.prepare(
+            "SELECT 1 FROM pipeline_invocation WHERE id = ?"
+        )
+        stmt.bind_text(1, invocation_id)
+        return Bool(stmt.step())
+
     def set_invocation_status(
         mut self, invocation_id: String, status: String
     ) raises:
