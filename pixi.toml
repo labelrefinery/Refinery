@@ -16,7 +16,15 @@ mojo = "==1.0.0"
 hungarian-mojo = { git = "https://github.com/labelrefinery/Hungarian.mojo.git", rev = "f20267c62fcfbf65b40beaaee7e9801f341ebf93" }
 kalman-mojo = { git = "https://github.com/labelrefinery/Kalman.mojo.git", rev = "76bcbfff125237108cb218d8f277eab91749c354" }
 stone-mojo = { git = "https://github.com/labelrefinery/Stone.mojo.git", rev = "9a37fac97fc80313941796cf0b2cc3d824e93cf5" }
+# Operational state -- pipeline invocations, router decisions, the review queue.
+# Labels stay in Iceberg; this is the control plane, which wants point lookups
+# and small frequent writes rather than table commits.
+sqlite-mojo = { git = "https://github.com/magmalake/sqlite.mojo" }
+libsqlite = ">=3.45,<4"
 
 [tasks]
 format = { cmd = "mojo format src", description = "Format all Mojo sources" }
 check = { cmd = "mojo run -I src src/main.mojo", description = "Compile-check the pipeline (prints usage)" }
+test-proc = { cmd = "mojo run -I src test/test_proc.mojo", description = "Subprocess helper tests" }
+test-opsdb = { cmd = "mojo run -I src test/test_opsdb.mojo", description = "Control-plane database tests" }
+test = { depends-on = ["test-proc", "test-opsdb"], description = "All Mojo tests" }
