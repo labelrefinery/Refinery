@@ -276,10 +276,12 @@ geo_kinetic_discovery: 0 steps ran, 7 skipped, 0s
 
 That is not just convenience. Durable-execution engines replay handlers, so
 every step must be idempotent or a retry doubles the work — making it true here
-in plain Python means adopting Restate or Temporal later is *wrapping* this
-rather than rewriting it. `manifest.<workflow>.json` doubles as the provenance
-record: what ran, with which parameters, over which input hashes, producing
-which artefacts.
+means adopting Restate later is *wrapping* this rather than rewriting it.
+`manifest.<workflow>.json` doubles as the provenance record: what ran, with
+which parameters, over which input hashes, producing which artefacts.
+
+That wrapping now exists — see **The control plane** below. The `workflows/`
+CLI above still works and is the simplest way to run a pipeline by hand.
 
 Feeding one workflow's `labels` into the next is the loop:
 
@@ -291,6 +293,53 @@ Feeding one workflow's `labels` into the next is the loop:
 
 `min_path_m` is the load-bearing parameter, not a tuning knob — on unfiltered
 labels the same code goes *backwards*.
+
+## The control plane
+
+The loop as a durable service: a router picks what to run next, stages execute
+as Restate handlers, and the run can **stop and wait for a person** — for days
+if it needs to, holding no process while it waits.
+
+```sh
+npx @restatedev/restate-server                  # once
+pixi run executor                               # pipeline stages   :9080
+pixi run orchestrator                           # the durable loop  :9081
+npx @restatedev/restate deployments register http://localhost:9080
+npx @restatedev/restate deployments register http://localhost:9081
+
+# and the control site, in ../LabelControl
+pixi run serve                                  # 127.0.0.1:10001
+```
+
+One call to `RefineryLoop/<scene>/step` advances a run by one stage: ask the
+router, record the decision, run it, record the outcome. Driven to completion
+it takes a random seed to scored labels. The site shows every run
+chronologically — which stage, which executor, its metrics, and what the router
+was choosing between at each decision — and hands you a queue of labels to
+review.
+
+Three kinds of executor, all visible on the timeline:
+
+| | |
+| --- | --- |
+| `subprocess` | `sitegen`, the training scripts — spawned with the output captured to a log |
+| `mojo` | a handler on the executor service, in-process, no JIT per call |
+| `inproc` | pure Mojo the orchestrator runs itself: the label filter, the Iceberg publish |
+
+**Why two databases.** `ops.db` (SQLite, WAL) is the control plane —
+invocations, router decisions, the review queue, and the idempotency ledger. It
+is also the only interface between the orchestrator and the site, which never
+share a process. Labels go to **Iceberg**, because a reviewed label is a claim
+about the data that should outlive the next run; publishing registers
+`(name, version)` pinned to a snapshot, so a version resolves to the same rows
+forever.
+
+**Why the ledger is not Restate's journal.** `run_enter`/`run_exit` makes a
+crashed run resume without redoing finished work *within one invocation*. The
+ledger skips work across *separate* runs: re-run tomorrow and the exports do
+not run again. A stage is runnable when its inputs exist and the ledger lacks
+its key — not when its outputs are missing, which would make a stage whose
+*inputs changed* permanently ineligible and serve stale results forever.
 
 ## Looking at the labels
 
