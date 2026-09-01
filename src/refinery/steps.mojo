@@ -43,6 +43,10 @@ def build_stages(
     min_path_m: Float64 = 4.0,
     seed: Int = 1,
     duration_s: Float64 = 6.0,
+    centerpillars: String = "",
+    epochs: Int = 20,
+    score_thresh: Float64 = 0.2,
+    round_name: String = "r1",
 ) -> List[Stage]:
     """Every stage for one scene, with concrete paths.
 
@@ -64,6 +68,15 @@ def build_stages(
     # `version-hint.text` is the one stable path an Iceberg table always has
     # after its first commit, so it is what the ledger can check for.
     var published = warehouse + "/labelrefinery/labels/metadata/version-hint.text"
+    var train_data = work + "/" + round_name + "_data"
+    var train_cfg = work + "/" + round_name + ".yaml"
+    # The checkpoint lands outside the work directory, in a path keyed only by
+    # run name -- so the run name carries the seed, or two scenes collide.
+    var run_name = "refinery_seed" + String(seed) + "_" + round_name
+    var checkpoint = centerpillars + "/runs/" + run_name + "/best.pt"
+    var dets = work + "/" + round_name + "_dets.csv"
+    var student = work + "/" + round_name + "_labels.csv"
+    var student_score = work + "/" + round_name + "_score.json"
 
     var stages = List[Stage]()
 
@@ -231,6 +244,102 @@ def build_stages(
             "",
         )
     )
+    # The training path needs to know where CenterPillars.py lives. Without it
+    # the checkpoint path is nonsense, so the stages are simply not offered --
+    # better than a router that can pick a stage guaranteed to fail.
+    if centerpillars.byte_length() > 0:
+        stages.append(
+            Stage(
+                "build_training_set",
+                "subprocess",
+                [labels, sweeps],
+                [train_data],
+                "{}",
+                [
+                    "uv", "run", "--project", sitegen, "python",
+                    refinery_repo + "/scripts/to_centerpillars.py",
+                    work, labels, "--out", train_data,
+                ],
+                refinery_repo,
+                "",
+                "",
+            )
+        )
+        stages.append(
+            Stage(
+                "write_train_config",
+                "inproc",
+                [train_data],
+                [train_cfg],
+                '{"epochs": ' + String(epochs) + ', "run_name": "' + run_name + '"}',
+                [],
+                # cwd carries the template path for this in-process stage.
+                refinery_repo + "/configs/sitegen.yaml",
+                run_name,
+                String(epochs),
+            )
+        )
+        stages.append(
+            Stage(
+                "train_student",
+                "subprocess",
+                [train_cfg, train_data],
+                [checkpoint],
+                '{"epochs": ' + String(epochs) + "}",
+                ["uv", "run", "python", "-m", "centerpillars.train", "--config", train_cfg],
+                centerpillars,
+                "",
+                "",
+            )
+        )
+        stages.append(
+            Stage(
+                "student_detect",
+                "subprocess",
+                [checkpoint],
+                [dets],
+                '{"score_thresh": ' + String(score_thresh) + "}",
+                [
+                    "uv", "run", "--project", centerpillars, "python",
+                    refinery_repo + "/scripts/predict_sitegen.py",
+                    "--checkpoint", checkpoint, "--work", work, "--out", dets,
+                    "--score-thresh", String(score_thresh),
+                ],
+                refinery_repo,
+                "",
+                "",
+            )
+        )
+        stages.append(
+            Stage(
+                "student_track",
+                "mojo",
+                [dets],
+                [student],
+                "{}",
+                [],
+                "",
+                "track_detections",
+                "detections=" + dets + "&out=" + student,
+            )
+        )
+        stages.append(
+            Stage(
+                "score_student",
+                "subprocess",
+                [student, truth],
+                [student_score],
+                '{"exclude": ["grade_stake"]}',
+                [
+                    "uv", "run", "--project", sitegen, "sitegen", "score", student,
+                    "--truth", truth, "--json", student_score,
+                    "--exclude", "grade_stake",
+                ],
+                "",
+                "",
+                "",
+            )
+        )
     stages.append(
         Stage(
             "score_labels",

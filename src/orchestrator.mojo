@@ -23,6 +23,7 @@ from restate import App, Invocation, is_suspended
 from refinery.filter import filter_labels
 from refinery.publish import publish_labels
 from refinery.review import apply_edits
+from refinery.trainconfig import write_train_config
 from refinery.opsdb import OpsDb
 from refinery.proc import run_checked
 from refinery.router import choose_random
@@ -113,6 +114,16 @@ def run_stage(
                 stage.inputs[0], stage.outputs[0], min_path_m
             )
             return metrics.as_json()
+        if stage.name == "write_train_config":
+            # cwd carries the template, handler the run name, payload epochs.
+            var cfg = write_train_config(
+                stage.cwd,
+                stage.outputs[0],
+                stage.inputs[0],
+                stage.handler,
+                Int(Float64(stage.payload)),
+            )
+            return cfg.as_json()
         if stage.name == "publish_labels":
             # `cwd` carries the warehouse root for this stage -- the field is
             # unused by in-process stages otherwise.
@@ -167,6 +178,10 @@ def advance(mut app: App, inv: Invocation, params: Dict[String, String]) raises 
     var min_path_m = Float64(get(params, "min_path_m", String("4.0")))
     var seed = Int(Float64(get(params, "seed", String("1"))))
     var duration_s = Float64(get(params, "duration_s", String("6.0")))
+    var centerpillars = get(params, "centerpillars", String(""))
+    var epochs = Int(Float64(get(params, "epochs", String("20"))))
+    var score_thresh = Float64(get(params, "score_thresh", String("0.2")))
+    var round_name = get(params, "round", String("r1"))
 
     var db = OpsDb(ops_path)
     if invocation_id.byte_length() == 0:
@@ -181,7 +196,17 @@ def advance(mut app: App, inv: Invocation, params: Dict[String, String]) raises 
         )
 
     var stages = build_stages(
-        scene, work, sitegen, repo, min_path_m, seed, duration_s
+        scene,
+        work,
+        sitegen,
+        repo,
+        min_path_m,
+        seed,
+        duration_s,
+        centerpillars,
+        epochs,
+        score_thresh,
+        round_name,
     )
 
     # Ask the ledger, not the filesystem, whether each stage is already done.

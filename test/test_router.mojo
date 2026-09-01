@@ -45,6 +45,25 @@ def test_stage_table_has_the_expected_stages() raises:
     assert_equal(s[7].executor, "inproc")
 
 
+def test_training_stages_appear_only_with_a_centerpillars_path() raises:
+    var without = build_stages("/s.mcap", "/w", "/sitegen", "/repo", 4.0)
+    var with_cp = build_stages(
+        "/s.mcap", "/w", "/sitegen", "/repo", 4.0, 1, 6.0, "/cp", 20, 0.2, "r1"
+    )
+    assert_equal(len(with_cp) - len(without), 6)
+    var names = List[String]()
+    for i in range(len(with_cp)):
+        names.append(with_cp[i].name)
+    assert_true("train_student" in names)
+    assert_true("student_track" in names)
+    # offering a stage whose checkpoint path is nonsense means the router will
+    # eventually pick it, and it will fail every time
+    var bare = List[String]()
+    for i in range(len(without)):
+        bare.append(without[i].name)
+    assert_true("train_student" not in bare)
+
+
 def test_only_generate_is_legal_without_a_scene() raises:
     var d = _setup()
     var s = build_stages(d + "/absent.mcap", d + "/w1", "/sitegen", "/repo", 4.0)
