@@ -1,4 +1,4 @@
-from refinery.review import apply_edits
+from refinery.review import apply_edits, is_safe_value
 from std.os import makedirs
 from std.os.path import exists
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
@@ -119,6 +119,41 @@ def test_missing_track_id_column_is_an_error() raises:
     _write(d + "/bad.csv", "a,b\n1,2\n")
     with assert_raises():
         _ = apply_edits(d + "/bad.csv", d + "/bad_out.csv", List[List[String]]())
+
+
+def test_a_comma_would_shift_every_column_and_is_refused() raises:
+    var d = _setup()
+    _write(d + "/inj.csv", HEAD + "\n1,0,0.0,0,0,0,1,1,1,0,0,0,1.0\n")
+    var edits = List[List[String]]()
+    # read_detections reads positionally, so this would silently move t into x
+    edits.append(_edit("1", "cls", "truck,999,0.0,0,0"))
+    var m = apply_edits(d + "/inj.csv", d + "/inj_out.csv", edits)
+    assert_equal(m.rejected, 1)
+    assert_equal(m.rows_changed, 0)
+    # the file still has one row of thirteen columns
+    var lines = _read(d + "/inj_out.csv").split("\n")
+    assert_equal(len(String(lines[1]).split(",")), 13)
+
+
+def test_a_newline_would_split_a_row_and_is_refused() raises:
+    var d = _setup()
+    _write(d + "/nl.csv", HEAD + "\n1,0,0.0,0,0,0,1,1,1,0,0,0,1.0\n")
+    var edits = List[List[String]]()
+    edits.append(_edit("1", "cls", "truck\nextra"))
+    var m = apply_edits(d + "/nl.csv", d + "/nl_out.csv", edits)
+    assert_equal(m.rejected, 1)
+
+
+def test_spreadsheet_formulas_are_refused() raises:
+    assert_equal(is_safe_value("=1+1"), False)
+    assert_equal(is_safe_value("@SUM(A1)"), False)
+    assert_equal(is_safe_value("+cmd"), False)
+
+
+def test_ordinary_class_names_are_fine() raises:
+    assert_equal(is_safe_value("haul_truck"), True)
+    assert_equal(is_safe_value("grade stake"), True)
+    assert_equal(is_safe_value(""), False)
 
 
 def main() raises:

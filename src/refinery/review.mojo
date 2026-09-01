@@ -18,11 +18,36 @@ rebuild that grouped by track would not.
 """
 
 
+def is_safe_value(v: String) -> Bool:
+    """Reject anything that would change the CSV's shape.
+
+    This matters more than it looks. `refinery.pipeline.read_detections` reads
+    the tracker CSV **positionally**, so a comma inside a class name shifts
+    every column after it -- t becomes x, w becomes h -- and the pipeline reads
+    plausible wrong geometry rather than failing. A newline splits one row into
+    two. Neither is detectable downstream, so it has to be refused here.
+
+    A leading `=`, `+`, `-` or `@` is refused too: those make a spreadsheet
+    treat the cell as a formula when someone opens the CSV to check the labels.
+    """
+    if v.byte_length() == 0 or v.byte_length() > 64:
+        return False
+    var first = String(v[byte=0])
+    if first == "=" or first == "+" or first == "-" or first == "@":
+        return False
+    for i in range(v.byte_length()):
+        var c = String(v[byte=i])
+        if c == "," or c == "\n" or c == "\r" or c == '"':
+            return False
+    return True
+
+
 @fieldwise_init
 struct ReviewMetrics(Copyable, ImplicitlyCopyable, Movable):
     var rows: Int
     var edits: Int
     var rows_changed: Int
+    var rejected: Int
 
     def as_json(self) -> String:
         return String(
@@ -32,6 +57,8 @@ struct ReviewMetrics(Copyable, ImplicitlyCopyable, Movable):
             self.edits,
             ', "rows_changed": ',
             self.rows_changed,
+            ', "rejected": ',
+            self.rejected,
             "}",
         )
 
@@ -84,6 +111,7 @@ def apply_edits(
 
     var changed = 0
     var applied = 0
+    var rejected = 0
     for e in range(len(edits)):
         ref edit = edits[e]
         if len(edit) < 3:
@@ -91,6 +119,9 @@ def apply_edits(
         var target = edit[0]
         var col = _column(header, edit[1])
         if col < 0:
+            continue
+        if not is_safe_value(edit[2]):
+            rejected += 1
             continue
         applied += 1
         for i in range(len(rows)):
@@ -118,7 +149,7 @@ def apply_edits(
         out.write(line + "\n")
     out.close()
 
-    var metrics = ReviewMetrics(len(rows), applied, changed)
+    var metrics = ReviewMetrics(len(rows), applied, changed, rejected)
     print(
         "review:",
         applied,
@@ -126,7 +157,9 @@ def apply_edits(
         changed,
         "of",
         len(rows),
-        "rows ->",
+        "rows,",
+        rejected,
+        "rejected ->",
         out_path,
     )
     return metrics^
