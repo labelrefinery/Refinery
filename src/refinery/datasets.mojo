@@ -102,6 +102,107 @@ comptime LABELS_SCHEMA_JSON = """
 """
 
 
+comptime EVALUATION_SCHEMA_JSON = """
+{"type":"struct","schema-id":0,"fields":[
+{"id":1,"name":"dataset_name","required":true,"type":"string"},
+{"id":2,"name":"run_id","required":false,"type":"string"},
+{"id":3,"name":"predictions","required":false,"type":"string"},
+{"id":4,"name":"ground_truth","required":false,"type":"string"},
+{"id":5,"name":"slice","required":false,"type":"string"},
+{"id":6,"name":"metric","required":true,"type":"string"},
+{"id":7,"name":"value","required":true,"type":"double"},
+{"id":8,"name":"produced_by","required":false,"type":"string"},
+{"id":9,"name":"created_at","required":false,"type":"string"}
+]}
+"""
+"""Long form -- one row per metric per slice -- so adding a metric later is
+rows rather than a schema migration. A score is a claim about two other
+datasets, which is why `predictions` and `ground_truth` name versions."""
+
+comptime PROMPT_SCHEMA_JSON = """
+{"type":"struct","schema-id":0,"fields":[
+{"id":1,"name":"dataset_name","required":true,"type":"string"},
+{"id":2,"name":"prompt_id","required":true,"type":"string"},
+{"id":3,"name":"text","required":true,"type":"string"},
+{"id":4,"name":"phrase","required":true,"type":"string"},
+{"id":5,"name":"maps_to_class","required":false,"type":"string"},
+{"id":6,"name":"ontology_version","required":false,"type":"string"},
+{"id":7,"name":"target_model","required":false,"type":"string"}
+]}
+"""
+"""One row per phrase, not per prompt string, because `maps_to_class` is per
+phrase -- and that mapping is what turns a detector's raw label into an
+ontology class without string-matching at the call site."""
+
+
+@fieldwise_init
+struct EvalRow(Copyable, Movable):
+    """One metric, one slice."""
+
+    var slice: String
+    var metric: String
+    var value: Float64
+
+
+def write_evaluation(
+    mut catalog: FilesystemCatalog,
+    dataset_name: String,
+    rows: List[EvalRow],
+    predictions: String,
+    ground_truth: String,
+    produced_by: String,
+    run_id: String,
+    created_at: String = "",
+) raises -> Int:
+    """Append evaluation rows and return the snapshot they landed in."""
+    var target = kind_table("evaluation")
+    var schema = Schema.parse(EVALUATION_SCHEMA_JSON)
+
+    var table: Table
+    if catalog.table_exists(NAMESPACE, target):
+        table = catalog.load_table(NAMESPACE, target)
+    else:
+        table = catalog.create_table(NAMESPACE, target, schema)
+
+    var b_name = ColumnBuilder(String("dataset_name"), 1, P_STRING)
+    var b_run = ColumnBuilder(String("run_id"), 2, P_STRING)
+    var b_pred = ColumnBuilder(String("predictions"), 3, P_STRING)
+    var b_gt = ColumnBuilder(String("ground_truth"), 4, P_STRING)
+    var b_slice = ColumnBuilder(String("slice"), 5, P_STRING)
+    var b_metric = ColumnBuilder(String("metric"), 6, P_STRING)
+    var b_value = ColumnBuilder(String("value"), 7, P_DOUBLE)
+    var b_by = ColumnBuilder(String("produced_by"), 8, P_STRING)
+    var b_at = ColumnBuilder(String("created_at"), 9, P_STRING)
+
+    for i in range(len(rows)):
+        ref r = rows[i]
+        b_name.add(Datum.string_(dataset_name))
+        b_run.add(Datum.string_(run_id))
+        b_pred.add(Datum.string_(predictions))
+        b_gt.add(Datum.string_(ground_truth))
+        b_slice.add(Datum.string_(r.slice))
+        b_metric.add(Datum.string_(r.metric))
+        b_value.add(Datum.double_(r.value))
+        b_by.add(Datum.string_(produced_by))
+        b_at.add(Datum.string_(created_at))
+
+    var tx = table.new_append()
+    tx.add(
+        batch_of(
+            [
+                b_name^, b_run^, b_pred^, b_gt^, b_slice^, b_metric^,
+                b_value^, b_by^, b_at^,
+            ]
+        )
+    )
+    _ = tx.commit()
+
+    var committed = catalog.load_table(NAMESPACE, target)
+    var snapshot = Int(committed.metadata.current_snapshot_id)
+    print("evaluation:", len(rows), "rows ->", target, "snapshot", snapshot)
+    return snapshot
+
+
 @fieldwise_init
 struct Dataset(Copyable, Movable):
     """One registered version."""

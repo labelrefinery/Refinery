@@ -1,0 +1,14 @@
+prompt_id,phrase,maps_to_class,target_model,ontology_version
+construction_v1,excavator,excavator,grounding-dino-tiny,0.1.0
+construction_v1,haul truck,haul_truck,grounding-dino-tiny,0.1.0
+construction_v1,worker,worker,grounding-dino-tiny,0.1.0
+construction_v1,person,worker,grounding-dino-tiny,0.1.0
+construction_v2,excavator,excavator,grounding-dino-tiny,0.1.0
+construction_v2,digger,excavator,grounding-dino-tiny,0.1.0
+construction_v2,haul truck,haul_truck,grounding-dino-tiny,0.1.0
+construction_v2,dump truck,haul_truck,grounding-dino-tiny,0.1.0
+construction_v2,construction worker,worker,grounding-dino-tiny,0.1.0
+construction_v2,person in hi-vis vest,worker,grounding-dino-tiny,0.1.0
+construction_v2,survey stake,grade_stake,grounding-dino-tiny,0.1.0
+minimal_v1,vehicle,haul_truck,grounding-dino-tiny,0.1.0
+minimal_v1,person,worker,grounding-dino-tiny,0.1.0

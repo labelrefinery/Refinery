@@ -1,5 +1,13 @@
 from refinery.steps import Stage
-from refinery.router import choose_random, inputs_ready, is_legal, legal_stages
+from refinery.router import (
+    build_prompt,
+    choose_llm,
+    choose_random,
+    inputs_ready,
+    is_legal,
+    legal_stages,
+    parse_choice,
+)
 from refinery.steps import build_stages
 from std.os import makedirs, remove
 from std.os.path import exists
@@ -37,7 +45,7 @@ def _names(stages: List[Stage], idxs: List[Int]) -> List[String]:
 
 def test_stage_table_has_the_expected_stages() raises:
     var s = build_stages("/scene.mcap", "/w", "/sitegen", "/repo", 4.0)
-    assert_equal(len(s), 14)
+    assert_equal(len(s), 16)
     assert_equal(s[0].name, "generate_scene")
     assert_equal(s[5].name, "geometry")
     assert_equal(s[5].executor, "mojo")
@@ -165,6 +173,83 @@ def test_candidates_json_is_recorded() raises:
     var decision = choose_random(s, _none(len(s)))
     assert_true(decision.candidates_json().startswith('["generate_scene"'))
     assert_equal(decision.model, "random")
+
+
+def _answers_generate(prompt: String) raises -> String:
+    return String("generate_scene")
+
+
+def _answers_prose(prompt: String) raises -> String:
+    return String("I would run generate_scene first because nothing exists.")
+
+
+def _answers_nonsense(prompt: String) raises -> String:
+    return String("obliterate_everything")
+
+
+def _answers_two(prompt: String) raises -> String:
+    return String("either generate_scene or export_tf would work")
+
+
+def _raises(prompt: String) raises -> String:
+    raise Error("connection refused")
+
+
+def test_the_prompt_lists_only_legal_stages() raises:
+    var d = _setup()
+    var s = build_stages(d + "/none.mcap", d + "/wl", "/sitegen", "/repo", 4.0)
+    var p = build_prompt(s, legal_stages(s, _none(len(s))), d + "/wl")
+    assert_true("generate_scene" in p)
+    # geometry cannot run without its inputs, so the model is never offered it
+    assert_true("- geometry " not in p)
+
+
+def test_a_clean_answer_is_taken() raises:
+    var d = _setup()
+    var s = build_stages(d + "/none.mcap", d + "/wl", "/sitegen", "/repo", 4.0)
+    var dec = choose_llm(s, _none(len(s)), d + "/wl", _answers_generate)
+    assert_equal(dec.model, "llm")
+    assert_equal(s[dec.chosen].name, "generate_scene")
+    assert_true(dec.prompt.byte_length() > 0)
+    assert_equal(dec.response, "generate_scene")
+
+
+def test_a_name_inside_prose_is_taken() raises:
+    var d = _setup()
+    var s = build_stages(d + "/none.mcap", d + "/wl", "/sitegen", "/repo", 4.0)
+    var dec = choose_llm(s, _none(len(s)), d + "/wl", _answers_prose)
+    assert_equal(s[dec.chosen].name, "generate_scene")
+
+
+def test_an_illegal_answer_falls_back_and_says_so() raises:
+    var d = _setup()
+    var s = build_stages(d + "/none.mcap", d + "/wl", "/sitegen", "/repo", 4.0)
+    var dec = choose_llm(s, _none(len(s)), d + "/wl", _answers_nonsense)
+    assert_equal(dec.model, "llm-fallback")
+    # still a legal pick, and the bad answer is kept
+    assert_true(is_legal(s[dec.chosen], False))
+    assert_equal(dec.response, "obliterate_everything")
+
+
+def test_an_unreachable_model_falls_back() raises:
+    var d = _setup()
+    var s = build_stages(d + "/none.mcap", d + "/wl", "/sitegen", "/repo", 4.0)
+    var dec = choose_llm(s, _none(len(s)), d + "/wl", _raises)
+    assert_equal(dec.model, "llm-fallback")
+    assert_true("connection refused" in dec.reason)
+
+
+def test_an_ambiguous_answer_is_refused() raises:
+    var d = _setup()
+    var work = d + "/wl2"
+    if not exists(work):
+        makedirs(work, exist_ok=True)
+    var scene = d + "/sl.mcap"
+    _touch(scene)
+    var s = build_stages(scene, work, "/sitegen", "/repo", 4.0)
+    var legal = legal_stages(s, _none(len(s)))
+    # naming two legal stages is not a choice
+    assert_equal(parse_choice("generate_scene or export_tf", s, legal), -1)
 
 
 def main() raises:

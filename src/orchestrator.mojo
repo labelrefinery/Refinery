@@ -21,12 +21,13 @@ until `done` is true; the control site does that, one row at a time.
 from restate import App, Invocation, is_suspended
 
 from refinery.filter import filter_labels
+from refinery.planning import optimize_prompt, select_scene
 from refinery.publish import publish_labels
 from refinery.review import apply_edits, apply_gold
 from refinery.trainconfig import write_train_config
 from refinery.opsdb import OpsDb
 from refinery.proc import run_checked
-from refinery.router import choose_random
+from refinery.router import Decision, choose_llm, choose_random
 from refinery.runctx import outputs_json, should_skip, step_key
 from refinery.steps import Stage, build_stages
 
@@ -67,6 +68,25 @@ def require(params: Dict[String, String], key: String) raises -> String:
     if value.byte_length() == 0:
         raise Error("missing required parameter: " + key)
     return value^
+
+
+def ask_model(prompt: String) raises -> String:
+    """Send the planning question to a model over HTTP.
+
+    Deliberately a plain POST to a configurable endpoint rather than a
+    provider SDK: the router only needs a string back, and keeping the
+    provider behind one URL means swapping it is configuration rather than a
+    build dependency. `LABELREFINERY_LLM_URL` selects the endpoint;
+    unset means the LLM router is not used at all.
+
+    Not yet implemented -- raising here is what makes `choose_llm` fall back to
+    a random legal pick and record that it did, which is the behaviour worth
+    having before the call itself exists.
+    """
+    raise Error(
+        "no model transport configured (set LABELREFINERY_LLM_URL and"
+        " implement ask_model)"
+    )
 
 
 def json_escape(s: String) -> String:
@@ -124,6 +144,28 @@ def run_stage(
                 Int(Float64(stage.payload)),
             )
             return cfg.as_json()
+        if stage.name == "select_scene":
+            var scenes = List[String]()
+            scenes.append(dataset_name)
+            var chosen = select_scene(
+                stage.inputs.copy(),
+                scenes,
+                stage.cwd,
+                dataset_name,
+                run_id,
+                stage.outputs[0],
+            )
+            return String('{"chosen_scene": "', chosen, '"}')
+        if stage.name == "optimize_prompt":
+            var best = optimize_prompt(
+                stage.inputs[0],
+                stage.inputs[1],
+                stage.cwd,
+                dataset_name,
+                run_id,
+                stage.outputs[0],
+            )
+            return String('{"best_prompt": "', best, '"}')
         if stage.name == "publish_labels":
             # `cwd` carries the warehouse root for this stage -- the field is
             # unused by in-process stages otherwise.
@@ -235,7 +277,17 @@ def advance(mut app: App, inv: Invocation, params: Dict[String, String]) raises 
     if replayed_plan:
         plan = replayed_plan.value()
     else:
-        var decision = choose_random(stages, satisfied)
+        # `router=llm` opts in; anything else stays on the random policy. The
+        # LLM router falls back to a random legal pick when the model is
+        # unreachable or answers with something illegal, and records that it
+        # did -- so a fallback is visible rather than looking like a model that
+        # happens to agree with chance.
+        var policy = get(params, "router", String("random"))
+        var decision: Decision
+        if policy == "llm":
+            decision = choose_llm(stages, satisfied, work, ask_model)
+        else:
+            decision = choose_random(stages, satisfied)
         var seq = db.next_seq(invocation_id)
         var chosen_name = String("done") if decision.is_done() else stages[
             decision.chosen
@@ -247,6 +299,8 @@ def advance(mut app: App, inv: Invocation, params: Dict[String, String]) raises 
             chosen_name,
             decision.reason,
             decision.model,
+            decision.prompt,
+            decision.response,
         )
         var new_step_id = String("")
         if not decision.is_done():

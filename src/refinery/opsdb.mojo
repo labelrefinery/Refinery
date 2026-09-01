@@ -107,6 +107,8 @@ CREATE TABLE IF NOT EXISTS step_ledger (
 #: each is attempted and its "duplicate column" error swallowed.
 comptime MIGRATIONS = """
 ALTER TABLE review_task ADD COLUMN kind TEXT NOT NULL DEFAULT 'review'
+ALTER TABLE router_decision ADD COLUMN prompt TEXT
+ALTER TABLE router_decision ADD COLUMN response TEXT
 """
 
 
@@ -210,11 +212,14 @@ struct OpsDb(Movable):
         chosen: String,
         reason: String,
         model: String,
+        prompt: String = "",
+        response: String = "",
     ) raises -> String:
         var stmt = self.db.prepare(
             "INSERT INTO router_decision"
-            " (invocation_id, seq, candidates_json, chosen, reason, model)"
-            " VALUES (?, ?, ?, ?, ?, ?) RETURNING id"
+            " (invocation_id, seq, candidates_json, chosen, reason, model,"
+            "  prompt, response)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"
         )
         stmt.bind_text(1, invocation_id)
         stmt.bind_int(2, seq)
@@ -222,6 +227,10 @@ struct OpsDb(Movable):
         stmt.bind_text(4, chosen)
         stmt.bind_text(5, reason)
         stmt.bind_text(6, model)
+        # A model's decision is only auditable if the prompt it saw and the
+        # answer it gave are kept. Empty for the random router.
+        stmt.bind_text(7, prompt)
+        stmt.bind_text(8, response)
         var row = stmt.step()
         if not row:
             raise Error("could not record decision")

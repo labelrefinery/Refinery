@@ -74,6 +74,9 @@ def build_stages(
     # after its first commit, so it is what the ledger can check for.
     var named = work + "/labels_named.csv"
     var gold = work + "/labels_gold.csv"
+    var selection = work + "/selection.csv"
+    var prompt_scores = work + "/prompt_scores.csv"
+    var prompts_csv = refinery_repo + "/configs/prompts.csv"
     var score_gold = work + "/score_gold.json"
     var published = warehouse + "/labelrefinery/labels/metadata/version-hint.text"
     var train_data = work + "/" + round_name + "_data"
@@ -243,6 +246,37 @@ def build_stages(
     # Gold labelling: a person authors a reference set from the candidates,
     # rather than correcting a machine's output. Kept separate from review
     # because the claim is different -- gold is what you score against.
+    # Active learning: rank what is worth labelling next. Reads the named
+    # labels because name uncertainty is the signal available before any model
+    # exists, and writes every candidate's score rather than only the winner.
+    stages.append(
+        Stage(
+            "select_scene",
+            "inproc",
+            [named],
+            [selection],
+            "{}",
+            [],
+            warehouse,
+            "",
+            "",
+        )
+    )
+    # Prompt optimisation over the gold set: a gold set is the only thing that
+    # can say whether a prompt is any good, which is why this depends on one.
+    stages.append(
+        Stage(
+            "optimize_prompt",
+            "inproc",
+            [prompts_csv, gold],
+            [prompt_scores],
+            "{}",
+            [],
+            warehouse,
+            "",
+            "",
+        )
+    )
     stages.append(
         Stage(
             "gold_labeling",
