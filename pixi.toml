@@ -19,7 +19,6 @@ stone-mojo = { git = "https://github.com/labelrefinery/Stone.mojo.git", rev = "9
 # Operational state -- pipeline invocations, router decisions, the review queue.
 # Labels stay in Iceberg; this is the control plane, which wants point lookups
 # and small frequent writes rather than table commits.
-sqlite-mojo = { git = "https://github.com/magmalake/sqlite.mojo" }
 libsqlite = ">=3.45,<4"
 # Durable execution: the executor is a Restate service, so a stage that dies
 # mid-run is retried from the journal rather than from the top.
@@ -27,7 +26,9 @@ restate-mojo = { git = "https://github.com/millfolio/restate.mojo" }
 # Content hashing for the idempotency ledger. XXH64 rather than SHA-256: this
 # is change detection, not a security boundary, and it keeps Refinery free of
 # objectstore.mojo (libcurl + a C shim) which is where the SHA-256 lives.
-hashes-mojo = { git = "https://github.com/magmalake/hashes.mojo" }
+# Reviewed labels become a versioned, immutable Iceberg dataset -- the record
+# that a human corrected something, rather than a CSV that gets overwritten.
+iceberg-mojo = { git = "https://github.com/magmalake/iceberg.mojo" }
 
 [tasks]
 format = { cmd = "mojo format src", description = "Format all Mojo sources" }
@@ -38,7 +39,8 @@ test-runctx = { cmd = "mojo run -I src test/test_runctx.mojo", description = "Id
 test-filter = { cmd = "mojo run -I src test/test_filter.mojo", description = "Label filter tests" }
 test-router = { cmd = "mojo run -I src test/test_router.mojo", description = "Router and stage table tests" }
 test-review = { cmd = "mojo run -I src test/test_review.mojo", description = "Reviewer edit application tests" }
-test = { depends-on = ["test-proc", "test-opsdb", "test-runctx", "test-filter", "test-router", "test-review"], description = "All Mojo tests" }
+test-publish = { cmd = "mojo run -I src test/test_publish.mojo", description = "Iceberg publish tests" }
+test = { depends-on = ["test-proc", "test-opsdb", "test-runctx", "test-filter", "test-router", "test-review", "test-publish"], description = "All Mojo tests" }
 build-executor = { cmd = "mojo build -I src src/executor.mojo -o build/executor", description = "Build the Restate executor service" }
 # Must run under `pixi run`: restate.mojo resolves librestatemojo from
 # $CONDA_PREFIX/lib, and falls back to a dev-relative path when it is unset.

@@ -60,6 +60,10 @@ def build_stages(
     var score = work + "/score_labels.json"
     var reviewed = work + "/labels_reviewed.csv"
     var score_reviewed = work + "/score_reviewed.json"
+    var warehouse = work + "/datasets"
+    # `version-hint.text` is the one stable path an Iceberg table always has
+    # after its first commit, so it is what the ledger can check for.
+    var published = warehouse + "/labelrefinery/labels/metadata/version-hint.text"
 
     var stages = List[Stage]()
 
@@ -210,6 +214,19 @@ def build_stages(
                 "--exclude", "grade_stake",
             ],
             "",
+            "",
+            "",
+        )
+    )
+    stages.append(
+        Stage(
+            "publish_labels",
+            "inproc",
+            [reviewed],
+            [published],
+            '{"dataset": "labels", "producer": "human_review"}',
+            [],
+            warehouse,
             "",
             "",
         )

@@ -21,6 +21,7 @@ until `done` is true; the control site does that, one row at a time.
 from restate import App, Invocation, is_suspended
 
 from refinery.filter import filter_labels
+from refinery.publish import publish_labels
 from refinery.review import apply_edits
 from refinery.opsdb import OpsDb
 from refinery.proc import run_checked
@@ -83,7 +84,13 @@ def json_escape(s: String) -> String:
 
 
 def run_stage(
-    mut app: App, inv: Invocation, stage: Stage, work: String, min_path_m: Float64
+    mut app: App,
+    inv: Invocation,
+    stage: Stage,
+    work: String,
+    min_path_m: Float64,
+    dataset_name: String = "",
+    run_id: String = "",
 ) raises -> String:
     """Execute one stage and return its metrics JSON.
 
@@ -106,6 +113,13 @@ def run_stage(
                 stage.inputs[0], stage.outputs[0], min_path_m
             )
             return metrics.as_json()
+        if stage.name == "publish_labels":
+            # `cwd` carries the warehouse root for this stage -- the field is
+            # unused by in-process stages otherwise.
+            var pub = publish_labels(
+                stage.inputs[0], stage.cwd, dataset_name, run_id
+            )
+            return pub.as_json()
         raise Error("no in-process implementation for stage: " + stage.name)
 
     raise Error("unknown executor: " + stage.executor)
@@ -237,7 +251,15 @@ def advance(mut app: App, inv: Invocation, params: Dict[String, String]) raises 
         if stage.executor == "review":
             metrics = await_review(app, inv, db, invocation_id, step_id, stage)
         else:
-            metrics = run_stage(app, inv, stage, work, min_path_m)
+            metrics = run_stage(
+                app,
+                inv,
+                stage,
+                work,
+                min_path_m,
+                String("site_seed") + String(seed) + ".reviewed",
+                invocation_id,
+            )
     except e:
         db.finish_step(step_id, "failed", "{}", "{}", "", json_escape(String(e)))
         db.set_invocation_status(invocation_id, "failed")
