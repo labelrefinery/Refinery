@@ -286,8 +286,18 @@ def advance(mut app: App, inv: Invocation, params: Dict[String, String]) raises 
                 invocation_id,
             )
     except e:
-        db.finish_step(step_id, "failed", "{}", "{}", "", json_escape(String(e)))
-        db.set_invocation_status(invocation_id, "failed")
+        # A suspension is not a failure. `awakeable_await` raises to unwind the
+        # handler so Restate can free the process; the step is *waiting*, and
+        # marking it failed would put a review-in-progress on the timeline as
+        # an error and set the whole run to failed.
+        if is_suspended(e):
+            db.finish_step(step_id, "waiting", "{}", "{}", "", "")
+            db.set_invocation_status(invocation_id, "waiting")
+        else:
+            db.finish_step(
+                step_id, "failed", "{}", "{}", "", json_escape(String(e))
+            )
+            db.set_invocation_status(invocation_id, "failed")
         raise e
 
     db.finish_step(
