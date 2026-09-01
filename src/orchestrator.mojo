@@ -182,6 +182,8 @@ def advance(mut app: App, inv: Invocation, params: Dict[String, String]) raises 
     var epochs = Int(Float64(get(params, "epochs", String("20"))))
     var score_thresh = Float64(get(params, "score_thresh", String("0.2")))
     var round_name = get(params, "round", String("r1"))
+    var camera_hz = Float64(get(params, "camera_hz", String("1.0")))
+    var dino = get(params, "dino", String(""))
 
     var db = OpsDb(ops_path)
     if invocation_id.byte_length() == 0:
@@ -207,6 +209,8 @@ def advance(mut app: App, inv: Invocation, params: Dict[String, String]) raises 
         epochs,
         score_thresh,
         round_name,
+        camera_hz,
+        dino,
     )
 
     # Ask the ledger, not the filesystem, whether each stage is already done.

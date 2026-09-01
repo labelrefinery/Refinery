@@ -47,6 +47,11 @@ def build_stages(
     epochs: Int = 20,
     score_thresh: Float64 = 0.2,
     round_name: String = "r1",
+    camera_hz: Float64 = 1.0,
+    dino: String = "",
+    prompt: String = "excavator . haul truck . worker . person .",
+    max_calls: Int = 30,
+    views_per_instance: Int = 3,
 ) -> List[Stage]:
     """Every stage for one scene, with concrete paths.
 
@@ -67,6 +72,7 @@ def build_stages(
     var warehouse = work + "/datasets"
     # `version-hint.text` is the one stable path an Iceberg table always has
     # after its first commit, so it is what the ledger can check for.
+    var named = work + "/labels_named.csv"
     var published = warehouse + "/labelrefinery/labels/metadata/version-hint.text"
     var train_data = work + "/" + round_name + "_data"
     var train_cfg = work + "/" + round_name + ".yaml"
@@ -95,6 +101,11 @@ def build_stages(
                 "uv", "run", "--project", sitegen, "sitegen", "generate",
                 "--out", scene, "--seed", String(seed),
                 "--duration", String(duration_s),
+                # Without cameras the naming stage cannot run at all --
+                # name_instances exits saying the scene carries no camera
+                # topics. Camera rendering draws no randomness, so this leaves
+                # the LiDAR byte-identical to a scene generated without it.
+                "--camera-hz", String(camera_hz),
             ],
             "",
             "",
@@ -201,6 +212,32 @@ def build_stages(
             "",
         )
     )
+    # Naming needs both a scene with cameras and the Grounding DINO checkout
+    # with its weights; without the latter the subprocess fails every time, so
+    # the stage is not offered rather than offered and doomed.
+    if dino.byte_length() > 0:
+        stages.append(
+            Stage(
+                "name_instances",
+                "subprocess",
+                [scene, labels],
+                [named],
+                '{"prompt": "' + prompt + '", "max_calls": '
+                + String(max_calls) + "}",
+                [
+                    "uv", "run", "--project", sitegen, "python",
+                    refinery_repo + "/scripts/name_instances.py",
+                    "--scene", scene, "--labels", labels, "--out", named,
+                    "--dino", dino, "--prompt", prompt,
+                    "--max-calls", String(max_calls),
+                    "--views-per-instance", String(views_per_instance),
+                ],
+                refinery_repo,
+                "",
+                "",
+            )
+        )
+
     stages.append(
         Stage(
             "human_review",
