@@ -39,6 +39,8 @@ def build_stages(
     sitegen: String,
     refinery_repo: String,
     min_path_m: Float64 = 4.0,
+    seed: Int = 1,
+    duration_s: Float64 = 6.0,
 ) -> List[Stage]:
     """Every stage for one scene, with concrete paths.
 
@@ -57,6 +59,27 @@ def build_stages(
 
     var stages = List[Stage]()
 
+    # Scene generation is a stage rather than something the control site does
+    # before starting a run: it is slow, it can fail, and it deserves the same
+    # ledger and timeline treatment as everything else. It is also the only
+    # stage with no inputs, so it is the sole legal first move.
+    stages.append(
+        Stage(
+            "generate_scene",
+            "subprocess",
+            [],
+            [scene],
+            '{"seed": ' + String(seed) + ', "duration_s": ' + String(duration_s) + "}",
+            [
+                "uv", "run", "--project", sitegen, "sitegen", "generate",
+                "--out", scene, "--seed", String(seed),
+                "--duration", String(duration_s),
+            ],
+            "",
+            "",
+            "",
+        )
+    )
     stages.append(
         Stage(
             "export_tf",

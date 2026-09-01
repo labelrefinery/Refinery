@@ -119,12 +119,16 @@ def advance(mut app: App, inv: Invocation, params: Dict[String, String]) raises 
     var ops_path = get(params, "ops", work + "/ops.db")
     var invocation_id = get(params, "invocation", String(""))
     var min_path_m = Float64(get(params, "min_path_m", String("4.0")))
+    var seed = Int(Float64(get(params, "seed", String("1"))))
+    var duration_s = Float64(get(params, "duration_s", String("6.0")))
 
     var db = OpsDb(ops_path)
     if invocation_id.byte_length() == 0:
-        invocation_id = db.new_invocation(scene, 0, work)
+        invocation_id = db.new_invocation(scene, seed, work)
 
-    var stages = build_stages(scene, work, sitegen, repo, min_path_m)
+    var stages = build_stages(
+        scene, work, sitegen, repo, min_path_m, seed, duration_s
+    )
 
     # Ask the ledger, not the filesystem, whether each stage is already done.
     # A stage whose outputs exist but whose inputs changed is *not* done.

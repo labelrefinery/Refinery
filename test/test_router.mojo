@@ -37,18 +37,20 @@ def _names(stages: List[Stage], idxs: List[Int]) -> List[String]:
 
 def test_stage_table_has_the_expected_stages() raises:
     var s = build_stages("/scene.mcap", "/w", "/sitegen", "/repo", 4.0)
-    assert_equal(len(s), 8)
-    assert_equal(s[0].name, "export_tf")
-    assert_equal(s[4].name, "geometry")
-    assert_equal(s[4].executor, "mojo")
-    assert_equal(s[6].name, "filter_labels")
-    assert_equal(s[6].executor, "inproc")
+    assert_equal(len(s), 9)
+    assert_equal(s[0].name, "generate_scene")
+    assert_equal(s[5].name, "geometry")
+    assert_equal(s[5].executor, "mojo")
+    assert_equal(s[7].name, "filter_labels")
+    assert_equal(s[7].executor, "inproc")
 
 
-def test_nothing_is_legal_without_a_scene() raises:
+def test_only_generate_is_legal_without_a_scene() raises:
     var d = _setup()
     var s = build_stages(d + "/absent.mcap", d + "/w1", "/sitegen", "/repo", 4.0)
-    assert_equal(len(legal_stages(s, _none(len(s)))), 0)
+    var legal = legal_stages(s, _none(len(s)))
+    assert_equal(len(legal), 1)
+    assert_equal(s[Int(legal[0])].name, "generate_scene")
 
 
 def test_only_exports_are_legal_with_just_a_scene() raises:
@@ -60,8 +62,9 @@ def test_only_exports_are_legal_with_just_a_scene() raises:
     _touch(scene)
     var s = build_stages(scene, work, "/sitegen", "/repo", 4.0)
     var legal = legal_stages(s, _none(len(s)))
-    # the four sitegen exports depend only on the scene
-    assert_equal(len(legal), 4)
+    # the four sitegen exports depend only on the scene, plus generate_scene
+    # which the empty ledger does not yet know has run
+    assert_equal(len(legal), 5)
     var names = _names(s, legal)
     assert_true("export_tf" in names)
     assert_true("export_truth" in names)
@@ -112,12 +115,24 @@ def test_router_only_ever_picks_a_legal_stage() raises:
         assert_true(is_legal(s[decision.chosen], False))
 
 
-def test_router_reports_done_when_nothing_is_runnable() raises:
+def test_router_reports_done_when_everything_is_satisfied() raises:
     var d = _setup()
     var s = build_stages(d + "/nope.mcap", d + "/w6", "/sitegen", "/repo", 4.0)
-    var decision = choose_random(s, _none(len(s)))
+    var all_done = List[Bool]()
+    for _ in range(len(s)):
+        all_done.append(True)
+    var decision = choose_random(s, all_done)
     assert_true(decision.is_done())
     assert_equal(decision.candidates_json(), "[]")
+
+
+def test_generate_scene_is_the_only_first_move() raises:
+    var d = _setup()
+    # no scene on disk: only the stage that needs no inputs can run
+    var s = build_stages(d + "/absent2.mcap", d + "/w8", "/sitegen", "/repo", 4.0)
+    var names = _names(s, legal_stages(s, _none(len(s))))
+    assert_equal(len(names), 1)
+    assert_equal(names[0], "generate_scene")
 
 
 def test_candidates_json_is_recorded() raises:
@@ -129,7 +144,7 @@ def test_candidates_json_is_recorded() raises:
     _touch(scene)
     var s = build_stages(scene, work, "/sitegen", "/repo", 4.0)
     var decision = choose_random(s, _none(len(s)))
-    assert_true(decision.candidates_json().startswith('["export_'))
+    assert_true(decision.candidates_json().startswith('["generate_scene"'))
     assert_equal(decision.model, "random")
 
 
