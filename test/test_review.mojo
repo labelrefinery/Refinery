@@ -1,4 +1,4 @@
-from refinery.review import apply_edits, is_safe_value
+from refinery.review import apply_edits, apply_gold, is_safe_value
 from std.os import makedirs
 from std.os.path import exists
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
@@ -154,6 +154,64 @@ def test_ordinary_class_names_are_fine() raises:
     assert_equal(is_safe_value("haul_truck"), True)
     assert_equal(is_safe_value("grade stake"), True)
     assert_equal(is_safe_value(""), False)
+
+
+def _dec(track: String, field: String, value: String) -> List[String]:
+    var d = List[String]()
+    d.append(track)
+    d.append(field)
+    d.append(value)
+    return d^
+
+
+def test_gold_keeps_only_vouched_tracks() raises:
+    var d = _setup()
+    _write(
+        d + "/g.csv",
+        HEAD + "\n"
+        + "1,0,0.0,0,0,0,1,1,1,0,0,0,1.0\n"
+        + "2,0,0.0,9,9,0,1,1,1,0,0,0,1.0\n",
+    )
+    var decs = List[List[String]]()
+    decs.append(_dec("1", "keep", "1"))
+    decs.append(_dec("1", "cls", "excavator"))
+    var m = apply_gold(d + "/g.csv", d + "/g_out.csv", decs)
+    assert_equal(m.rows_changed, 1)
+    var body = _read(d + "/g_out.csv")
+    assert_true("1,excavator," in body)
+    # track 2 was never vouched for, so it is not truth
+    assert_true("\n2," not in body)
+
+
+def test_gold_default_is_exclusion() raises:
+    var d = _setup()
+    _write(d + "/g2.csv", HEAD + "\n7,0,0.0,0,0,0,1,1,1,0,0,0,1.0\n")
+    var m = apply_gold(d + "/g2.csv", d + "/g2_out.csv", List[List[String]]())
+    assert_equal(m.rows_changed, 0)
+
+
+def test_gold_marks_the_source() raises:
+    var d = _setup()
+    _write(d + "/g3.csv", HEAD + "\n3,0,0.0,0,0,0,1,1,1,0,0,0,1.0\n")
+    var decs = List[List[String]]()
+    decs.append(_dec("3", "keep", "1"))
+    var m = apply_gold(d + "/g3.csv", d + "/g3_out.csv", decs)
+    assert_equal(m.rows_changed, 1)
+    var body = _read(d + "/g3_out.csv")
+    assert_true("cls_source" in body)
+    assert_true("gold" in body)
+
+
+def test_gold_refuses_a_shape_changing_name() raises:
+    var d = _setup()
+    _write(d + "/g4.csv", HEAD + "\n4,0,0.0,0,0,0,1,1,1,0,0,0,1.0\n")
+    var decs = List[List[String]]()
+    decs.append(_dec("4", "keep", "1"))
+    decs.append(_dec("4", "cls", "truck,9,9"))
+    var m = apply_gold(d + "/g4.csv", d + "/g4_out.csv", decs)
+    assert_equal(m.rejected, 1)
+    var lines = _read(d + "/g4_out.csv").split("\n")
+    assert_equal(len(String(lines[1]).split(",")), 14)
 
 
 def main() raises:

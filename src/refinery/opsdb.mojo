@@ -63,6 +63,10 @@ CREATE TABLE IF NOT EXISTS review_task (
   invocation_id TEXT NOT NULL REFERENCES pipeline_invocation(id),
   step_run_id   TEXT,
   labels_path   TEXT NOT NULL,
+  -- review corrects a machine's labels, gold authors a reference set a human
+  -- stands behind. Same waiting machinery, different claim about the result,
+  -- so the kind travels with the task rather than being inferred.
+  kind          TEXT NOT NULL DEFAULT 'review',
   status        TEXT NOT NULL DEFAULT 'open',
   awakeable_id  TEXT,
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -99,6 +103,13 @@ CREATE TABLE IF NOT EXISTS step_ledger (
 """
 
 
+#: Additive column changes, applied after the tables exist. Safe to re-run:
+#: each is attempted and its "duplicate column" error swallowed.
+comptime MIGRATIONS = """
+ALTER TABLE review_task ADD COLUMN kind TEXT NOT NULL DEFAULT 'review'
+"""
+
+
 struct OpsDb(Movable):
     """The control-plane database. Open one per process."""
 
@@ -117,6 +128,26 @@ struct OpsDb(Movable):
             var sql = String(String(part).strip())
             if sql.byte_length() > 0:
                 self.db.execute(sql)
+        self._migrate()
+
+    def _migrate(mut self) raises:
+        """Add columns that CREATE TABLE IF NOT EXISTS cannot.
+
+        The schema above only ever creates missing tables, so a column added to
+        an existing table never appears in a database that already has it --
+        and every query naming that column then fails against a file that was
+        working an hour ago. Each ALTER is attempted and its "duplicate column"
+        error swallowed, which is the whole migration story this needs while
+        the schema is additive.
+        """
+        for line in MIGRATIONS.split("\n"):
+            var stmt = String(String(line).strip())
+            if stmt.byte_length() == 0:
+                continue
+            try:
+                self.db.execute(stmt)
+            except:
+                pass
 
     def _returning_id(mut self, sql: String, binds: List[String]) raises -> String:
         """Run an INSERT ... RETURNING id and hand back the generated id."""
@@ -264,6 +295,7 @@ struct OpsDb(Movable):
         step_run_id: String,
         labels_path: String,
         awakeable_id: String,
+        kind: String = "review",
     ) raises -> String:
         """Open a review task, or return the existing one for this awakeable.
 
@@ -273,14 +305,15 @@ struct OpsDb(Movable):
         """
         var ins = self.db.prepare(
             "INSERT INTO review_task"
-            " (invocation_id, step_run_id, labels_path, awakeable_id)"
-            " VALUES (?, ?, ?, ?)"
+            " (invocation_id, step_run_id, labels_path, awakeable_id, kind)"
+            " VALUES (?, ?, ?, ?, ?)"
             " ON CONFLICT (awakeable_id) DO NOTHING"
         )
         ins.bind_text(1, invocation_id)
         ins.bind_text(2, step_run_id)
         ins.bind_text(3, labels_path)
         ins.bind_text(4, awakeable_id)
+        ins.bind_text(5, kind)
         _ = ins.step()
 
         var q = self.db.prepare(

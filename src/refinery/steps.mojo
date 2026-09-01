@@ -73,6 +73,8 @@ def build_stages(
     # `version-hint.text` is the one stable path an Iceberg table always has
     # after its first commit, so it is what the ledger can check for.
     var named = work + "/labels_named.csv"
+    var gold = work + "/labels_gold.csv"
+    var score_gold = work + "/score_gold.json"
     var published = warehouse + "/labelrefinery/labels/metadata/version-hint.text"
     var train_data = work + "/" + round_name + "_data"
     var train_cfg = work + "/" + round_name + ".yaml"
@@ -238,6 +240,39 @@ def build_stages(
             )
         )
 
+    # Gold labelling: a person authors a reference set from the candidates,
+    # rather than correcting a machine's output. Kept separate from review
+    # because the claim is different -- gold is what you score against.
+    stages.append(
+        Stage(
+            "gold_labeling",
+            "gold",
+            [labels],
+            [gold],
+            "{}",
+            [],
+            "",
+            "",
+            "",
+        )
+    )
+    stages.append(
+        Stage(
+            "score_gold",
+            "subprocess",
+            [gold, truth],
+            [score_gold],
+            '{"exclude": ["grade_stake"]}',
+            [
+                "uv", "run", "--project", sitegen, "sitegen", "score", gold,
+                "--truth", truth, "--json", score_gold,
+                "--exclude", "grade_stake",
+            ],
+            "",
+            "",
+            "",
+        )
+    )
     stages.append(
         Stage(
             "human_review",

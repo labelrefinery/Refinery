@@ -22,7 +22,7 @@ from restate import App, Invocation, is_suspended
 
 from refinery.filter import filter_labels
 from refinery.publish import publish_labels
-from refinery.review import apply_edits
+from refinery.review import apply_edits, apply_gold
 from refinery.trainconfig import write_train_config
 from refinery.opsdb import OpsDb
 from refinery.proc import run_checked
@@ -153,16 +153,20 @@ def await_review(
     Opening the task is keyed on the awakeable id, because a replay re-creates
     the same id and must not open a second task for the same wait.
     """
+    var kind = String("gold") if stage.executor == "gold" else String("review")
     var awakeable = app.awakeable_create(inv)
     var task_id = db.open_review(
-        invocation_id, step_id, stage.inputs[0], awakeable
+        invocation_id, step_id, stage.inputs[0], awakeable, kind
     )
-    print("review waiting:", task_id, "awakeable:", awakeable)
+    print(kind, "waiting:", task_id, "awakeable:", awakeable)
 
     _ = app.awakeable_await(inv, awakeable)
 
     db.resolve_review(task_id)
     var edits = db.review_edits(task_id)
+    if kind == "gold":
+        var g = apply_gold(stage.inputs[0], stage.outputs[0], edits)
+        return g.as_json()
     var metrics = apply_edits(stage.inputs[0], stage.outputs[0], edits)
     return metrics.as_json()
 
@@ -277,7 +281,7 @@ def advance(mut app: App, inv: Invocation, params: Dict[String, String]) raises 
 
     var metrics: String
     try:
-        if stage.executor == "review":
+        if stage.executor == "review" or stage.executor == "gold":
             metrics = await_review(app, inv, db, invocation_id, step_id, stage)
         else:
             metrics = run_stage(

@@ -37,7 +37,7 @@ def _names(stages: List[Stage], idxs: List[Int]) -> List[String]:
 
 def test_stage_table_has_the_expected_stages() raises:
     var s = build_stages("/scene.mcap", "/w", "/sitegen", "/repo", 4.0)
-    assert_equal(len(s), 12)
+    assert_equal(len(s), 14)
     assert_equal(s[0].name, "generate_scene")
     assert_equal(s[5].name, "geometry")
     assert_equal(s[5].executor, "mojo")

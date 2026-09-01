@@ -77,6 +77,127 @@ def _column(header: List[String], name: String) -> Int:
     return -1
 
 
+def apply_gold(
+    labels_path: String,
+    out_path: String,
+    decisions: List[List[String]],
+) raises -> ReviewMetrics:
+    """Build a gold set: keep the tracks a person vouched for, with their names.
+
+    Different from `apply_edits` in the one way that matters. A review corrects
+    a machine's labels and every row survives; gold *authors* a reference set,
+    so a track nobody vouched for is dropped rather than kept unchanged. The
+    default is therefore exclusion — an unanswered track does not quietly
+    become truth.
+
+    `decisions` carries `[track_id, "keep", "1"]` and `[track_id, "cls", name]`.
+    `cls_source` is set to `gold` on every surviving row, so a downstream
+    consumer can tell a human's claim from a detector's.
+    """
+    var handle = open(labels_path, "r")
+    var text = handle.read()
+    handle.close()
+
+    var header = List[String]()
+    var rows = List[List[String]]()
+    var first = True
+    for raw in text.split("\n"):
+        var line = String(String(raw).strip())
+        if line.byte_length() == 0:
+            continue
+        if first:
+            header = _split_line(line)
+            first = False
+            continue
+        rows.append(_split_line(line))
+
+    var col_track = _column(header, "track_id")
+    var col_cls = _column(header, "cls")
+    if col_track < 0:
+        raise Error("labels CSV has no track_id column: " + labels_path)
+
+    # cls_source belongs on a gold row, so add the column when it is absent.
+    var col_src = _column(header, "cls_source")
+    if col_src < 0:
+        header.append(String("cls_source"))
+        col_src = len(header) - 1
+        for i in range(len(rows)):
+            while len(rows[i]) < len(header):
+                rows[i].append(String(""))
+
+    var kept_ids = List[String]()
+    var named_ids = List[String]()
+    var names = List[String]()
+    var rejected = 0
+    for d in range(len(decisions)):
+        ref one = decisions[d]
+        if len(one) < 3:
+            continue
+        if one[1] == "keep" and one[2] == "1":
+            kept_ids.append(one[0])
+        elif one[1] == "cls":
+            if not is_safe_value(one[2]):
+                rejected += 1
+                continue
+            named_ids.append(one[0])
+            names.append(one[2])
+
+    var out = open(out_path, "w")
+    var head_line = String("")
+    for i in range(len(header)):
+        if i > 0:
+            head_line += ","
+        head_line += header[i]
+    out.write(head_line + "\n")
+
+    var written = 0
+    var kept_tracks = List[String]()
+    for i in range(len(rows)):
+        if col_track >= len(rows[i]):
+            continue
+        var tid = rows[i][col_track]
+        var keep = False
+        for k in range(len(kept_ids)):
+            if kept_ids[k] == tid:
+                keep = True
+        if not keep:
+            continue
+        for k in range(len(named_ids)):
+            if named_ids[k] == tid and col_cls >= 0 and col_cls < len(rows[i]):
+                rows[i][col_cls] = names[k]
+        if col_src < len(rows[i]):
+            rows[i][col_src] = String("gold")
+        var line = String("")
+        for c in range(len(rows[i])):
+            if c > 0:
+                line += ","
+            line += rows[i][c]
+        out.write(line + "\n")
+        written += 1
+        var seen = False
+        for k in range(len(kept_tracks)):
+            if kept_tracks[k] == tid:
+                seen = True
+        if not seen:
+            kept_tracks.append(tid)
+    out.close()
+
+    var metrics = ReviewMetrics(len(rows), len(kept_tracks), written, rejected)
+    print(
+        "gold:",
+        len(kept_tracks),
+        "tracks kept,",
+        written,
+        "of",
+        len(rows),
+        "rows,",
+        rejected,
+        "names rejected ->",
+        out_path,
+    )
+    return metrics^
+
+
 def apply_edits(
     labels_path: String,
     out_path: String,
