@@ -5,8 +5,8 @@ corrected labels, that correction is a claim about the data and deserves to
 survive the next run — which is the whole argument in `docs/DATASETS.md`, and
 the reason a reviewed file becomes a dataset rather than staying a file.
 
-The schema is the one `workflows/datasets.py` defines, column for column, so
-these rows land in the same shape a pipeline run would produce. The columns a
+The schema comes from `refinery.datasets`, which is its single definition, so
+the shape written here cannot drift from the shape the registry claims. The columns a
 tracker CSV cannot supply — `part`, `num_lidar_points`, `producer_version`,
 `ontology_version` — are written null rather than invented. `producer` and
 `run_id` are filled in, because the point of promoting a reviewed file is
@@ -16,36 +16,17 @@ knowing who changed it and in which run.
 from iceberg.batch import ColumnBuilder, Datum, batch_of
 from iceberg.catalog.filesystem import FilesystemCatalog, Table
 from iceberg.schema import Schema
+
+from refinery.datasets import (
+    LABELS_SCHEMA_JSON,
+    NAMESPACE,
+    kind_table,
+    register,
+)
 from iceberg.types import P_DOUBLE, P_INT, P_LONG, P_STRING
 from std.os.path import exists
 
 
-comptime LABELS_SCHEMA_JSON = """
-{"type":"struct","schema-id":0,"fields":[
-{"id":1,"name":"dataset_name","required":true,"type":"string"},
-{"id":2,"name":"instance_id","required":true,"type":"string"},
-{"id":3,"name":"class","required":false,"type":"string"},
-{"id":4,"name":"part","required":false,"type":"string"},
-{"id":5,"name":"t","required":true,"type":"double"},
-{"id":6,"name":"x","required":false,"type":"double"},
-{"id":7,"name":"y","required":false,"type":"double"},
-{"id":8,"name":"z","required":false,"type":"double"},
-{"id":9,"name":"w","required":false,"type":"double"},
-{"id":10,"name":"l","required":false,"type":"double"},
-{"id":11,"name":"h","required":false,"type":"double"},
-{"id":12,"name":"theta","required":false,"type":"double"},
-{"id":13,"name":"vx","required":false,"type":"double"},
-{"id":14,"name":"vy","required":false,"type":"double"},
-{"id":15,"name":"num_lidar_points","required":false,"type":"int"},
-{"id":16,"name":"conf","required":false,"type":"double"},
-{"id":17,"name":"cls_conf","required":false,"type":"double"},
-{"id":18,"name":"cls_source","required":false,"type":"string"},
-{"id":19,"name":"producer","required":false,"type":"string"},
-{"id":20,"name":"producer_version","required":false,"type":"string"},
-{"id":21,"name":"run_id","required":false,"type":"string"},
-{"id":22,"name":"ontology_version","required":false,"type":"string"}
-]}
-"""
 
 
 @fieldwise_init
@@ -92,6 +73,9 @@ def publish_labels(
     dataset_name: String,
     run_id: String,
     producer: String = "human_review",
+    version: String = "0.1.0",
+    parents: List[String] = List[String](),
+    created_at: String = "",
 ) raises -> PublishMetrics:
     """Append `labels_path` to the `labelrefinery.labels` table as a new snapshot."""
     var handle = open(labels_path, "r")
@@ -200,12 +184,13 @@ def publish_labels(
 
     var catalog = FilesystemCatalog.local(warehouse)
     var schema = Schema.parse(LABELS_SCHEMA_JSON)
+    var target = kind_table("labels")
 
     var table: Table
-    if catalog.table_exists("labelrefinery", "labels"):
-        table = catalog.load_table("labelrefinery", "labels")
+    if catalog.table_exists(NAMESPACE, target):
+        table = catalog.load_table(NAMESPACE, target)
     else:
-        table = catalog.create_table("labelrefinery", "labels", schema)
+        table = catalog.create_table(NAMESPACE, target, schema)
 
     var tx = table.new_append()
     tx.add(batch)
@@ -213,12 +198,31 @@ def publish_labels(
 
     # Re-load: the commit writes a new metadata file, and the in-memory table
     # still holds the pre-commit one, whose current-snapshot-id is -1.
-    var committed = catalog.load_table("labelrefinery", "labels")
+    var committed = catalog.load_table(NAMESPACE, target)
     var snapshot = committed.metadata.current_snapshot_id
+    # Registering is the half that makes it a *dataset* rather than an append:
+    # (name, version) pinned to this snapshot, so the rows resolve identically
+    # forever even after later writes to the same table.
+    _ = register(
+        catalog,
+        dataset_name,
+        version,
+        String("labels"),
+        Int(snapshot),
+        len(rows),
+        parents.copy(),
+        producer,
+        String(""),
+        String("{}"),
+        created_at,
+    )
+
     print(
         "published",
         len(rows),
-        "rows to labelrefinery.labels snapshot",
+        "rows to",
+        NAMESPACE + "." + target,
+        "snapshot",
         snapshot,
     )
     return PublishMetrics(len(rows), Int(snapshot), warehouse)

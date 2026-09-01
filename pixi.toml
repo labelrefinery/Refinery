@@ -40,7 +40,8 @@ test-filter = { cmd = "mojo run -I src test/test_filter.mojo", description = "La
 test-router = { cmd = "mojo run -I src test/test_router.mojo", description = "Router and stage table tests" }
 test-review = { cmd = "mojo run -I src test/test_review.mojo", description = "Reviewer edit application tests" }
 test-publish = { cmd = "mojo run -I src test/test_publish.mojo", description = "Iceberg publish tests" }
-test = { depends-on = ["test-proc", "test-opsdb", "test-runctx", "test-filter", "test-router", "test-review", "test-publish"], description = "All Mojo tests" }
+test-datasets = { cmd = "mojo run -I src test/test_datasets.mojo", description = "Dataset registry tests" }
+test = { depends-on = ["test-proc", "test-opsdb", "test-runctx", "test-filter", "test-router", "test-review", "test-publish", "test-datasets"], description = "All Mojo tests" }
 build-executor = { cmd = "mojo build -I src src/executor.mojo -o build/executor", description = "Build the Restate executor service" }
 # Must run under `pixi run`: restate.mojo resolves librestatemojo from
 # $CONDA_PREFIX/lib, and falls back to a dev-relative path when it is unset.
