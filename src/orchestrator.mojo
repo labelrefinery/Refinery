@@ -21,6 +21,7 @@ until `done` is true; the control site does that, one row at a time.
 from restate import App, Invocation, is_suspended
 
 from refinery.filter import filter_labels
+from refinery.review import apply_edits
 from refinery.opsdb import OpsDb
 from refinery.proc import run_checked
 from refinery.router import choose_random
@@ -110,6 +111,37 @@ def run_stage(
     raise Error("unknown executor: " + stage.executor)
 
 
+def await_review(
+    mut app: App,
+    inv: Invocation,
+    mut db: OpsDb,
+    invocation_id: String,
+    step_id: String,
+    stage: Stage,
+) raises -> String:
+    """Open a review task and wait for a person, however long that takes.
+
+    `awakeable_await` suspends the invocation: the process is freed and Restate
+    re-delivers with journal replay when the site resolves the awakeable. That
+    is what makes a wait of days cost nothing.
+
+    Opening the task is keyed on the awakeable id, because a replay re-creates
+    the same id and must not open a second task for the same wait.
+    """
+    var awakeable = app.awakeable_create(inv)
+    var task_id = db.open_review(
+        invocation_id, step_id, stage.inputs[0], awakeable
+    )
+    print("review waiting:", task_id, "awakeable:", awakeable)
+
+    _ = app.awakeable_await(inv, awakeable)
+
+    db.resolve_review(task_id)
+    var edits = db.review_edits(task_id)
+    var metrics = apply_edits(stage.inputs[0], stage.outputs[0], edits)
+    return metrics.as_json()
+
+
 def advance(mut app: App, inv: Invocation, params: Dict[String, String]) raises -> String:
     """Pick one stage, run it unless the ledger says it is unchanged, record it."""
     var scene = require(params, "scene")
@@ -146,32 +178,66 @@ def advance(mut app: App, inv: Invocation, params: Dict[String, String]) raises 
         var k = step_key(s.params_json, s.inputs)
         satisfied.append(should_skip(db, work, s.name, k, s.outputs))
 
-    var decision = choose_random(stages, satisfied)
-    var seq = db.next_seq(invocation_id)
-    _ = db.record_decision(
-        invocation_id,
-        seq,
-        decision.candidates_json(),
-        String("done") if decision.is_done() else stages[decision.chosen].name,
-        decision.reason,
-        decision.model,
-    )
+    # Journal the decision and the bookkeeping. The router picks at RANDOM, so
+    # without this a replay after a suspension would choose a different stage
+    # than the one already recorded -- and `start_step` would insert a second
+    # row for the same attempt. `run_enter`/`run_exit` makes the whole block
+    # happen once and replay identically.
+    var plan: String
+    var replayed_plan = app.run_enter(inv)
+    if replayed_plan:
+        plan = replayed_plan.value()
+    else:
+        var decision = choose_random(stages, satisfied)
+        var seq = db.next_seq(invocation_id)
+        var chosen_name = String("done") if decision.is_done() else stages[
+            decision.chosen
+        ].name
+        _ = db.record_decision(
+            invocation_id,
+            seq,
+            decision.candidates_json(),
+            chosen_name,
+            decision.reason,
+            decision.model,
+        )
+        var new_step_id = String("")
+        if not decision.is_done():
+            new_step_id = db.start_step(
+                invocation_id,
+                seq,
+                chosen_name,
+                stages[decision.chosen].executor,
+                stages[decision.chosen].params_json,
+            )
+        plan = app.run_exit(inv, chosen_name + "|" + new_step_id)
 
-    if decision.is_done():
+    var plan_parts = plan.split("|")
+    var chosen_name = String(plan_parts[0])
+    var step_id = String(plan_parts[1]) if len(plan_parts) > 1 else String("")
+
+    if chosen_name == "done":
         db.set_invocation_status(invocation_id, "done")
         return String(
             '{"invocation": "', invocation_id, '", "stage": null, "done": true}'
         )
 
-    ref stage = stages[decision.chosen]
+    var chosen_index = -1
+    for i in range(len(stages)):
+        if stages[i].name == chosen_name:
+            chosen_index = i
+    if chosen_index < 0:
+        raise Error("journalled stage no longer in the table: " + chosen_name)
+
+    ref stage = stages[chosen_index]
     var key = step_key(stage.params_json, stage.inputs)
-    var step_id = db.start_step(
-        invocation_id, seq, stage.name, stage.executor, stage.params_json
-    )
 
     var metrics: String
     try:
-        metrics = run_stage(app, inv, stage, work, min_path_m)
+        if stage.executor == "review":
+            metrics = await_review(app, inv, db, invocation_id, step_id, stage)
+        else:
+            metrics = run_stage(app, inv, stage, work, min_path_m)
     except e:
         db.finish_step(step_id, "failed", "{}", "{}", "", json_escape(String(e)))
         db.set_invocation_status(invocation_id, "failed")

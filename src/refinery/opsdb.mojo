@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS review_task (
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   resolved_at   TEXT
 );
+-- The awakeable id is the natural key: a replayed handler re-creates the same
+-- awakeable, so opening a review task must be idempotent.
+CREATE UNIQUE INDEX IF NOT EXISTS review_task_by_awakeable
+  ON review_task (awakeable_id);
 
 CREATE TABLE IF NOT EXISTS review_edit (
   id             TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -251,6 +255,72 @@ struct OpsDb(Movable):
             return 0
         ref r = row.value()
         return r.int_val(0)
+
+    # -- human review ------------------------------------------------------
+
+    def open_review(
+        mut self,
+        invocation_id: String,
+        step_run_id: String,
+        labels_path: String,
+        awakeable_id: String,
+    ) raises -> String:
+        """Open a review task, or return the existing one for this awakeable.
+
+        Idempotent because a suspended handler is replayed from the journal:
+        `awakeable_create` hands back the same id, so this must not open a
+        second task for it.
+        """
+        var ins = self.db.prepare(
+            "INSERT INTO review_task"
+            " (invocation_id, step_run_id, labels_path, awakeable_id)"
+            " VALUES (?, ?, ?, ?)"
+            " ON CONFLICT (awakeable_id) DO NOTHING"
+        )
+        ins.bind_text(1, invocation_id)
+        ins.bind_text(2, step_run_id)
+        ins.bind_text(3, labels_path)
+        ins.bind_text(4, awakeable_id)
+        _ = ins.step()
+
+        var q = self.db.prepare(
+            "SELECT id FROM review_task WHERE awakeable_id = ?"
+        )
+        q.bind_text(1, awakeable_id)
+        var row = q.step()
+        if not row:
+            raise Error("could not open review task")
+        ref r = row.value()
+        return r.text_val(0)
+
+    def resolve_review(mut self, task_id: String) raises:
+        var stmt = self.db.prepare(
+            "UPDATE review_task SET status = 'resolved',"
+            " resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')"
+            " WHERE id = ?"
+        )
+        stmt.bind_text(1, task_id)
+        _ = stmt.step()
+
+    def review_edits(mut self, task_id: String) raises -> List[List[String]]:
+        """`[track_id, field, new_value]` rows for one task, oldest first."""
+        var out = List[List[String]]()
+        var q = self.db.prepare(
+            "SELECT track_id, field, COALESCE(new_value,'')"
+            " FROM review_edit WHERE review_task_id = ? ORDER BY created_at"
+        )
+        q.bind_text(1, task_id)
+        while True:
+            var row = q.step()
+            if not row:
+                break
+            ref r = row.value()
+            var one = List[String]()
+            one.append(r.text_val(0))
+            one.append(r.text_val(1))
+            one.append(r.text_val(2))
+            out.append(one^)
+        return out^
 
     # -- the idempotency ledger -------------------------------------------
 

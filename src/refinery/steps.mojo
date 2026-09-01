@@ -10,6 +10,8 @@ Three ways a stage runs:
   subprocess — an existing Python tool or `sitegen`, spawned via proc.mojo
   mojo       — a handler on the Restate executor service
   inproc     — pure Mojo the orchestrator runs itself, like the label filter
+  review     — opens a review task and waits on an awakeable until a human
+               answers, which may be days
 """
 
 
@@ -56,6 +58,8 @@ def build_stages(
     var raw_reverse = work + "/labels_raw_reverse.csv"
     var labels = work + "/labels.csv"
     var score = work + "/score_labels.json"
+    var reviewed = work + "/labels_reviewed.csv"
+    var score_reviewed = work + "/score_reviewed.json"
 
     var stages = List[Stage]()
 
@@ -175,6 +179,36 @@ def build_stages(
             [labels],
             '{"min_path_m": ' + String(min_path_m) + "}",
             [],
+            "",
+            "",
+            "",
+        )
+    )
+    stages.append(
+        Stage(
+            "human_review",
+            "review",
+            [labels],
+            [reviewed],
+            "{}",
+            [],
+            "",
+            "",
+            "",
+        )
+    )
+    stages.append(
+        Stage(
+            "score_reviewed",
+            "subprocess",
+            [reviewed, truth],
+            [score_reviewed],
+            '{"exclude": ["grade_stake"]}',
+            [
+                "uv", "run", "--project", sitegen, "sitegen", "score", reviewed,
+                "--truth", truth, "--json", score_reviewed,
+                "--exclude", "grade_stake",
+            ],
             "",
             "",
             "",
