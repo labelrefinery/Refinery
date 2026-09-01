@@ -72,6 +72,20 @@ def run_tracking(
     mut metrics: StageMetrics,
 ) raises -> None:
     """Associate, smooth offline, filter short tracks, write the tracker CSV."""
+    # An empty input is reachable, not hypothetical: an undertrained student
+    # detects nothing, which is the loop's own starting condition. Indexing
+    # `frame_times[-1]` below crashes the process rather than raising, so this
+    # writes the header and reports zero -- a valid artefact the next stage can
+    # read, instead of a segfault.
+    if len(frame_times) == 0:
+        var empty = open(out_path, "w")
+        empty.write("track_id,cls,t,x,y,z,w,l,h,vx,vy,theta,conf\n")
+        empty.close()
+        metrics.tracks = 0
+        metrics.kept = 0
+        print("tracks: 0 kept: 0 ->", out_path)
+        return
+
     # A second, genuinely different tracklet set: associate backwards through
     # time. Births and deaths swap ends, gating resolves differently around
     # occlusions, and fragments break in different places -- which is exactly
