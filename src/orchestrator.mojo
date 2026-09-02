@@ -272,13 +272,10 @@ def advance(
     # Journal the decision and the bookkeeping. The router picks at RANDOM, so
     # without this a replay after a suspension would choose a different stage
     # than the one already recorded -- and `start_step` would insert a second
-    # row for the same attempt. `run_enter`/`run_exit` makes the whole block
-    # happen once and replay identically.
-    var plan: String
-    var replayed_plan = app.run_enter(inv)
-    if replayed_plan:
-        plan = replayed_plan.value()
-    else:
+    # row for the same attempt. `step` makes the whole block happen once and
+    # replay identically.
+    @parameter
+    def decide() raises -> String:
         # `router=llm` opts in; anything else stays on the random policy. The
         # LLM router falls back to a random legal pick when the model is
         # unreachable or answers with something illegal, and records that it
@@ -291,14 +288,14 @@ def advance(
         else:
             decision = choose_random(stages, satisfied)
         var seq = db.next_seq(invocation_id)
-        var chosen_name = String("done") if decision.is_done() else stages[
+        var chosen = String("done") if decision.is_done() else stages[
             decision.chosen
         ].name
         _ = db.record_decision(
             invocation_id,
             seq,
             decision.candidates_json(),
-            chosen_name,
+            chosen,
             decision.reason,
             decision.model,
             decision.prompt,
@@ -309,11 +306,13 @@ def advance(
             new_step_id = db.start_step(
                 invocation_id,
                 seq,
-                chosen_name,
+                chosen,
                 stages[decision.chosen].executor,
                 stages[decision.chosen].params_json,
             )
-        plan = app.run_exit(inv, chosen_name + "|" + new_step_id)
+        return chosen + "|" + new_step_id
+
+    var plan = app.step[decide](inv)
 
     var plan_parts = plan.split("|")
     var chosen_name = String(plan_parts[0])
