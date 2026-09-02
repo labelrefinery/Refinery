@@ -18,7 +18,7 @@ whole pipeline, and the control site gets a timeline that grows a row at a time.
 until `done` is true; the control site does that, one row at a time.
 """
 
-from restate import App, Invocation, is_suspended
+from restate import App, Ctx, Invocation, Unit, is_suspended
 
 from refinery.filter import filter_labels
 from refinery.planning import optimize_prompt, select_scene
@@ -105,7 +105,7 @@ def json_escape(s: String) -> String:
 
 
 def run_stage(
-    mut app: App,
+    app: App,
     inv: Invocation,
     stage: Stage,
     work: String,
@@ -179,7 +179,7 @@ def run_stage(
 
 
 def await_review(
-    mut app: App,
+    app: App,
     inv: Invocation,
     mut db: OpsDb,
     invocation_id: String,
@@ -213,7 +213,9 @@ def await_review(
     return metrics.as_json()
 
 
-def advance(mut app: App, inv: Invocation, params: Dict[String, String]) raises -> String:
+def advance(
+    app: App, inv: Invocation, params: Dict[String, String]
+) raises -> String:
     """Pick one stage, run it unless the ledger says it is unchanged, record it."""
     var scene = require(params, "scene")
     var work = require(params, "work")
@@ -381,27 +383,33 @@ def advance(mut app: App, inv: Invocation, params: Dict[String, String]) raises 
     )
 
 
+def handle_step(
+    app: App, inv: Invocation, worker: Int, ctx: Ctx[Unit]
+) raises -> None:
+    try:
+        var params = parse_params(inv.input_string())
+        app.complete(inv, advance(app, inv, params))
+    except e:
+        if is_suspended(e):
+            # Parked on something durable, not failed. Re-raise and let the
+            # driver abandon it so Restate resumes with the journal intact.
+            raise e
+        # Terminal, not retried: an invocation that fails identically on
+        # every redelivery would otherwise be re-delivered forever.
+        print("loop error:", e)
+        try:
+            app.fail(inv, String(e))
+        except:
+            app.abandon(inv)
+
+
 def main() raises:
-    var app = App("RefineryLoop", ["step"], object=True, port=9081)
+    var nothing = Unit()
     print(
         "RefineryLoop listening on :9081 — register with"
         " `restate deployments register http://localhost:9081`"
     )
-    while True:
-        var inv = app.next()
-        try:
-            var params = parse_params(inv.input_string())
-            var result = advance(app, inv, params)
-            app.complete(inv, result)
-        except e:
-            if is_suspended(e):
-                app.abandon(inv)
-            else:
-                # Terminal, not retried. The driver is single-threaded, so an
-                # invocation that fails identically on every redelivery does
-                # not just fail -- it starves every other request behind it.
-                print("loop error:", e)
-                try:
-                    app.fail(inv, String(e))
-                except:
-                    app.abandon(inv)
+    var served = App.run[Unit, __functions_in_module()](
+        "RefineryLoop", nothing, object=True, port=9081
+    )
+    print("stopped after", served, "invocations")

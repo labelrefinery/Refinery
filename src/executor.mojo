@@ -21,7 +21,7 @@ driver — which deadlocks if a handler calls one served by the same process —
 is not a constraint here.
 """
 
-from restate import App, is_suspended
+from restate import App, Ctx, Invocation, Unit
 
 from refinery.stages import run_geometry, run_track_detections
 
@@ -77,82 +77,71 @@ def require(params: Dict[String, String], key: String) raises -> String:
     return value^
 
 
+def handle_geometry(
+    app: App, inv: Invocation, worker: Int, ctx: Ctx[Unit]
+) raises -> None:
+    var params = parse_params(inv.input_string())
+
+    # Validate before doing anything. A missing parameter fails identically on
+    # every retry, so it is terminal -- abandoning it would leave Restate
+    # re-delivering and the caller hanging.
+    var work: String
+    var out: String
+    try:
+        work = require(params, "work")
+        out = require(params, "out")
+    except bad:
+        app.fail(inv, String(bad))
+        return
+
+    var accel = get_float(params, "accel_var", 1.5)
+    var meas = get_float(params, "meas_var", 0.25)
+    var terrain = get(params, "terrain", "on") == "on"
+    var reverse = get(params, "reverse", "off") == "on"
+
+    # Journaled: the stage writes a CSV and is expensive, so a replay after a
+    # crash must not run it a second time.
+    @parameter
+    def compute() raises -> String:
+        return run_geometry(work, out, accel, meas, terrain, reverse).as_json()
+
+    app.complete(inv, app.step[compute](inv))
+
+
+def handle_track_detections(
+    app: App, inv: Invocation, worker: Int, ctx: Ctx[Unit]
+) raises -> None:
+    var params = parse_params(inv.input_string())
+
+    var detections: String
+    var out: String
+    try:
+        detections = require(params, "detections")
+        out = require(params, "out")
+    except bad:
+        app.fail(inv, String(bad))
+        return
+
+    var accel = get_float(params, "accel_var", 1.5)
+    var meas = get_float(params, "meas_var", 0.25)
+    var reverse = get(params, "reverse", "off") == "on"
+
+    @parameter
+    def compute() raises -> String:
+        return run_track_detections(
+            detections, out, accel, meas, reverse
+        ).as_json()
+
+    app.complete(inv, app.step[compute](inv))
+
+
 def main() raises:
-    var app = App(
-        "RefineryExecutor",
-        ["geometry", "track_detections"],
-        object=False,
-    )
+    var nothing = Unit()
     print(
         "RefineryExecutor listening on :9080 — register with"
         " `restate deployments register http://localhost:9080`"
     )
-    while True:
-        var inv = app.next()
-        try:
-            var params = parse_params(inv.input_string())
-
-            if inv.handler == "geometry":
-                # Validate before doing anything. A missing parameter fails
-                # identically on every retry, so it is terminal -- abandoning
-                # it would leave Restate re-delivering and the caller hanging.
-                var work: String
-                var out: String
-                try:
-                    work = require(params, "work")
-                    out = require(params, "out")
-                except bad:
-                    app.fail(inv, String(bad))
-                    continue
-
-                # Journaled: the stage writes a CSV and is expensive, so a
-                # replay after a crash must not run it a second time.
-                var replayed = app.run_enter(inv)
-                var result: String
-                if replayed:
-                    result = replayed.value()
-                else:
-                    var metrics = run_geometry(
-                        work,
-                        out,
-                        get_float(params, "accel_var", 1.5),
-                        get_float(params, "meas_var", 0.25),
-                        get(params, "terrain", "on") == "on",
-                        get(params, "reverse", "off") == "on",
-                    )
-                    result = app.run_exit(inv, metrics.as_json())
-                app.complete(inv, result)
-
-            elif inv.handler == "track_detections":
-                var detections: String
-                var out2: String
-                try:
-                    detections = require(params, "detections")
-                    out2 = require(params, "out")
-                except bad:
-                    app.fail(inv, String(bad))
-                    continue
-
-                var replayed = app.run_enter(inv)
-                var result: String
-                if replayed:
-                    result = replayed.value()
-                else:
-                    var metrics = run_track_detections(
-                        detections,
-                        out2,
-                        get_float(params, "accel_var", 1.5),
-                        get_float(params, "meas_var", 0.25),
-                        get(params, "reverse", "off") == "on",
-                    )
-                    result = app.run_exit(inv, metrics.as_json())
-                app.complete(inv, result)
-
-            else:
-                app.fail(inv, "unknown handler: " + inv.handler)
-        except e:
-            # Suspension is normal: Restate re-delivers with journal replay.
-            # Anything else is a real failure worth seeing in the log.
-            app.abandon(inv)
-            if not is_suspended(e):
-                print("handler error:", e)
+    var served = App.run[Unit, __functions_in_module()](
+        "RefineryExecutor", nothing, object=False
+    )
+    print("stopped after", served, "invocations")
