@@ -22,7 +22,10 @@ stone-mojo = { git = "https://github.com/labelrefinery/Stone.mojo.git", rev = "9
 libsqlite = ">=3.45,<4"
 # Durable execution: the executor is a Restate service, so a stage that dies
 # mid-run is retried from the journal rather than from the top.
-restate-mojo = { git = "https://github.com/magmalake/restate.mojo" }
+# Pinned at the merge commit of magmalake/restate.mojo#5 (0.3.2: served mode on
+# threads-mojo 0.4.0's TypedPool). Move to the mojoshelf-published revision once
+# restate-mojo 0.3.2 is on the shelf.
+restate-mojo = { git = "https://github.com/magmalake/restate.mojo", rev = "e01fda13dbe4d4cf00988a578f5713d70045dd6a" }
 # Content hashing for the idempotency ledger. XXH64 rather than SHA-256: this
 # is change detection, not a security boundary, and it keeps Refinery free of
 # objectstore.mojo (libcurl + a C shim) which is where the SHA-256 lives.
