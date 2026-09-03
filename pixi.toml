@@ -31,7 +31,11 @@ restate-mojo = { git = "https://github.com/magmalake/restate.mojo", rev = "e01fd
 # objectstore.mojo (libcurl + a C shim) which is where the SHA-256 lives.
 # Reviewed labels become a versioned, immutable Iceberg dataset -- the record
 # that a human corrected something, rather than a CSV that gets overwritten.
-iceberg-mojo = { git = "https://github.com/magmalake/iceberg.mojo" }
+# Pinned at the revision mojoshelf published for iceberg-mojo 0.6.1 (what
+# `pixi shelf add iceberg-mojo` writes). 0.6.1 is the first release whose own
+# package pins name threads-mojo 0.4.0; earlier releases pulled threads 0.1.0
+# in transitively, and its deprecation warnings with it.
+iceberg-mojo = { git = "https://github.com/magmalake/iceberg.mojo", rev = "25a5cbee0f26400207e936d21af11f9e3fa41ee2" }
 
 [tasks]
 format = { cmd = "mojo format src", description = "Format all Mojo sources" }
