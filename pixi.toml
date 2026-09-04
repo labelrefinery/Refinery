@@ -35,7 +35,7 @@ restate-mojo = { git = "https://github.com/magmalake/restate.mojo", rev = "e01fd
 # `pixi shelf add iceberg-mojo` writes). 0.6.1 is the first release whose own
 # package pins name threads-mojo 0.4.0; earlier releases pulled threads 0.1.0
 # in transitively, and its deprecation warnings with it.
-iceberg-mojo = { git = "https://github.com/magmalake/iceberg.mojo", rev = "25a5cbee0f26400207e936d21af11f9e3fa41ee2" }
+iceberg-mojo = { git = "https://github.com/magmalake/iceberg.mojo", rev = "3c4cda63ec4983f266cf0b802fa30734d8ab6a04" }
 
 [tasks]
 format = { cmd = "mojo format src", description = "Format all Mojo sources" }
