@@ -58,6 +58,15 @@ pixi run mojo run -I src src/main.mojo work work/pipeline_a.csv
 sitegen score work/pipeline_a.csv --truth work/truth.csv --exclude grade_stake
 ```
 
+**One trap on a recording made with cameras**, which the published sample is.
+`sitegen tf` writes every `/tf` message it finds, and the four-camera rig
+publishes `map → camera_<name>` on the same topic, so `tf.csv` comes out with
+five poses per sweep instead of one and every stage downstream pairs sweep *i*
+with the wrong pose. Until the exporter filters on `child_frame_id`, generate
+the scene for a labelling run without `--camera-hz`: the LiDAR and every
+ground-truth topic are byte-identical either way, verified by checksum, so the
+labels are the same labels. The numbers below were produced that way.
+
 Dependencies come from the registry, one command:
 
 ```sh
@@ -187,21 +196,45 @@ No changes to `CenterPillars.py`. Its `SweepDataset` already reads
 the checkpoint using CenterPillars as a library. Nothing human-labelled enters
 at any point.
 
+On **sitegen 0.2.0**, the scene these numbers were first measured on:
+
 | | TP | FP | precision | recall | F1 | ATE | ASE | AOE |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | A — teacher (round 0) | 1552 | 824 | 0.653 | 0.647 | 0.650 | **0.365** | 0.576 | 0.750 |
 | B — round 1, unfiltered | 1424 | 953 | 0.599 | 0.593 | 0.596 | 0.387 | 0.498 | 0.579 |
 | **B — round 2, filtered** | **1574** | **136** | **0.921** | **0.656** | **0.766** | 0.397 | 0.514 | 0.630 |
 
+And on **sitegen 0.3.0**, the published sample — mesh actors, the GOOSE-Ex
+calibrated sensor, ground that deforms. Same binary, same parameters, same
+scorer:
+
+| | TP | FP | precision | recall | F1 | ATE | ASE | AOE |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| A — teacher (round 0) | 1081 | 617 | 0.637 | 0.450 | 0.528 | **0.725** | 0.694 | 0.720 |
+| B — round 1, unfiltered | 1003 | 731 | 0.578 | 0.418 | 0.485 | 0.813 | 0.669 | 0.735 |
+| **B — round 2, filtered** | **1011** | **177** | **0.851** | **0.421** | **0.564** | 0.779 | **0.675** | **0.701** |
+
 **Round two beats the teacher on every axis except ATE** — more true positives,
 83% fewer false positives, better size and heading. But the curve is not
 monotonic, and that is the point:
 
 ```
-round 0  (geometry only)      F1 0.650
-round 1  (unfiltered labels)  F1 0.596   <- regression
-round 2  (filtered labels)    F1 0.766
+                              0.2.0        0.3.0
+round 0  (geometry only)      F1 0.650     F1 0.528
+round 1  (unfiltered labels)  F1 0.596     F1 0.485   <- regression
+round 2  (filtered labels)    F1 0.766     F1 0.564
 ```
+
+**The shape survived the scene getting harder, and the level did not.** Every
+absolute number is worse on 0.3.0 because the scene is: a worker is a person
+rather than a cuboid and collects half the returns it used to, and the
+calibrated elevation band put the other half into the ground, so round-0 recall
+falls 0.647 → 0.450 before any of this runs. What did not move is the thing the
+loop is an argument about — round one still regresses, round two still recovers
+past the teacher, and round two is still better than its own supervision on
+both axes (training labels 0.799 / 0.380, student 0.851 / 0.421). The 0.2.0
+column stays because a claim that only holds on the scene it was tuned on is
+worth knowing about.
 
 **Round one made things worse.** Trained on the teacher's raw output it
 *amplified* the systematic error — 29.5% of teacher rows sit on a stockpile,
@@ -356,18 +389,18 @@ foxglove site.mcap labels.mcap        # Foxglove merges local files into one tim
 Each CSV becomes a `/pred/<name>` topic of cuboids with billboarded track ids,
 one categorical colour each, independently toggleable beside
 `/ground_truth/actors`. The scene file is never modified — three rounds of
-labels come to 471 KB against an 86 MB recording, so one scene serves any
+labels come to 347 KB against a 100 MB recording, so one scene serves any
 number of runs.
 
 Prebuilt, if you would rather not run anything:
 
 ```sh
-curl -O https://samples.magmalake.org/sitegen/v0.2.0/site_seed1_60s.mcap
-curl -O https://samples.magmalake.org/sitegen/v0.2.0/labels_rounds.mcap
+curl -O https://samples.magmalake.org/sitegen/v0.3.0/site_seed1_60s.mcap
+curl -O https://samples.magmalake.org/sitegen/v0.3.0/labels_rounds.mcap
 ```
 
 Scrub to t≈25 s: round 0 has objects standing on the stockpile, round 2 does
-not. That is the 824 → 136 false-positive drop, visible rather than tabulated.
+not. That is the 617 → 177 false-positive drop, visible rather than tabulated.
 
 ## Layout
 
