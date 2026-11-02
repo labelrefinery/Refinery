@@ -101,11 +101,12 @@ def handle_geometry(
 
     # Journaled: the stage writes a CSV and is expensive, so a replay after a
     # crash must not run it a second time.
-    @parameter
-    def compute() raises -> String:
+    def compute() raises {
+        imm work, imm out, imm accel, imm meas, imm terrain, imm reverse
+    } -> String:
         return run_geometry(work, out, accel, meas, terrain, reverse).as_json()
 
-    app.complete(inv, app.step[compute](inv))
+    app.complete(inv, app.step(inv, compute))
 
 
 def handle_track_detections(
@@ -126,13 +127,14 @@ def handle_track_detections(
     var meas = get_float(params, "meas_var", 0.25)
     var reverse = get(params, "reverse", "off") == "on"
 
-    @parameter
-    def compute() raises -> String:
+    def compute() raises {
+        imm detections, imm out, imm accel, imm meas, imm reverse
+    } -> String:
         return run_track_detections(
             detections, out, accel, meas, reverse
         ).as_json()
 
-    app.complete(inv, app.step[compute](inv))
+    app.complete(inv, app.step(inv, compute))
 
 
 def main() raises:
