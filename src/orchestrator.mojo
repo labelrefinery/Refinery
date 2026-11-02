@@ -274,8 +274,9 @@ def advance(
     # than the one already recorded -- and `start_step` would insert a second
     # row for the same attempt. `step` makes the whole block happen once and
     # replay identically.
-    @parameter
-    def decide() raises -> String:
+    def decide() raises {
+        imm params, imm stages, imm satisfied, imm work, imm invocation_id, mut db
+    } -> String:
         # `router=llm` opts in; anything else stays on the random policy. The
         # LLM router falls back to a random legal pick when the model is
         # unreachable or answers with something illegal, and records that it
@@ -312,7 +313,7 @@ def advance(
             )
         return chosen + "|" + new_step_id
 
-    var plan = app.step[decide](inv)
+    var plan = app.step(inv, decide)
 
     var plan_parts = plan.split("|")
     var chosen_name = String(plan_parts[0])

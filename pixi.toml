@@ -12,30 +12,27 @@ channels = [
 platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
 
 [dependencies]
-mojo = "==1.0.0"
-hungarian-mojo = { git = "https://github.com/labelrefinery/Hungarian.mojo.git", rev = "f20267c62fcfbf65b40beaaee7e9801f341ebf93" }
-kalman-mojo = { git = "https://github.com/labelrefinery/Kalman.mojo.git", rev = "76bcbfff125237108cb218d8f277eab91749c354" }
-stone-mojo = { git = "https://github.com/labelrefinery/Stone.mojo.git", rev = "9a37fac97fc80313941796cf0b2cc3d824e93cf5" }
+mojo = "==1.2.0"
+hungarian-mojo = { git = "https://github.com/labelrefinery/Hungarian.mojo.git", rev = "ff7e457fd4bb59b14fea02b19d39d009d20ceb98" }
+kalman-mojo = { git = "https://github.com/labelrefinery/Kalman.mojo.git", rev = "a2f64ab912225c2aabe744ba5e43bec071f85747" }
+stone-mojo = { git = "https://github.com/labelrefinery/Stone.mojo.git", rev = "54ee1f7ed7edfa6236b06ad39ea0fc16680abec7" }
 # Operational state -- pipeline invocations, router decisions, the review queue.
 # Labels stay in Iceberg; this is the control plane, which wants point lookups
 # and small frequent writes rather than table commits.
 libsqlite = ">=3.45,<4"
 # Durable execution: the executor is a Restate service, so a stage that dies
 # mid-run is retried from the journal rather than from the top.
-# Pinned at the merge commit of magmalake/restate.mojo#5 (0.3.2: served mode on
-# threads-mojo 0.4.0's TypedPool). Move to the mojoshelf-published revision once
-# restate-mojo 0.3.2 is on the shelf.
-restate-mojo = { git = "https://github.com/magmalake/restate.mojo", rev = "e01fda13dbe4d4cf00988a578f5713d70045dd6a" }
+# Pinned at the revision mojoshelf published for restate-mojo 0.4.1, the first
+# release built with Mojo 1.2.0 (on threads-mojo 0.6.1).
+restate-mojo = { git = "https://github.com/magmalake/restate.mojo", rev = "e391b04b0de1f0c1f5f1b5ab736d43d171e4d1f8" }
 # Content hashing for the idempotency ledger. XXH64 rather than SHA-256: this
 # is change detection, not a security boundary, and it keeps Refinery free of
 # objectstore.mojo (libcurl + a C shim) which is where the SHA-256 lives.
 # Reviewed labels become a versioned, immutable Iceberg dataset -- the record
 # that a human corrected something, rather than a CSV that gets overwritten.
-# Pinned at the revision mojoshelf published for iceberg-mojo 0.6.1 (what
-# `pixi shelf add iceberg-mojo` writes). 0.6.1 is the first release whose own
-# package pins name threads-mojo 0.4.0; earlier releases pulled threads 0.1.0
-# in transitively, and its deprecation warnings with it.
-iceberg-mojo = { git = "https://github.com/magmalake/iceberg.mojo", rev = "3c4cda63ec4983f266cf0b802fa30734d8ab6a04" }
+# Pinned at the revision mojoshelf published for iceberg-mojo 0.8.3 (what
+# `pixi shelf add iceberg-mojo` writes), built with Mojo 1.2.0.
+iceberg-mojo = { git = "https://github.com/magmalake/iceberg.mojo", rev = "fa79fb13de1a8e063e1fa7bc087276f5858052ee" }
 
 [tasks]
 format = { cmd = "mojo format src", description = "Format all Mojo sources" }

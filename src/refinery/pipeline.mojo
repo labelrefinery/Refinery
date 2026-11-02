@@ -620,7 +620,7 @@ def smooth(
         p.set(0, 0, 4.0)
         p.set(1, 1, 25.0)
         var prior = GaussianState([start, 0.0], p^)
-        var result = smooth_track(prior, obs^, 1, accel_var, measurement_var)
+        var result = smooth_track(prior, obs, 1, accel_var, measurement_var)
         for i in range(n):
             if axis == 0:
                 track.obs_x[i] = result.states[i].mean[0]
