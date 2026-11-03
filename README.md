@@ -416,7 +416,7 @@ pixi run -e orca ./build/av2-pipeline-a run --partitions 02678d04-cc9f-3148-9f95
 ```
 
 `src/av2_pipeline_a.mojo` is four steps. `fetch` downloads a log and lays it out
-as a work directory (`scripts/av2_fetch.py`; a converted log is kept). `label`
+as a work directory (`refinery.av2_fetch`; a converted log is kept). `label`
 runs `run_geometry` on it and appends the tracks to `av2.tracks_a`. `score`
 matches them to the log's annotations (`refinery.av2`) and appends a row to
 `av2.scores_a`. `summary` gathers the run's scores. The partitions are the
@@ -449,11 +449,13 @@ floor, not a measure: AV2 doesn't annotate walls, poles, trees or vegetation,
 which a geometric clusterer finds, so most unmatched tracks are real structure
 rather than noise. Classing them is Pipeline B's job.
 
-The environment builds against sibling checkouts of the magmalake repos
-(`../../magmalake/*`, each at main), as orca's own `data` environment does,
-and needs nothing else. AV2's Feather files are LZ4-compressed Arrow IPC,
-which arrow-mlake doesn't read yet, so the converter is Python (pyarrow); the
-rest is Mojo. AV2 is licensed CC BY-NC-SA 4.0.
+It's Mojo end to end. The logs come from the bucket anonymously through
+objectstore's S3 client, many objects per request batch (a 160 MB log in about
+ten seconds). AV2's Feather files are LZ4-compressed Arrow IPC files, read by
+arrow-mlake's `read_ipc_file` with lz4-mojo's frame decoder. The environment
+builds against sibling checkouts of the magmalake repos (`../../magmalake/*`,
+each at main; arrow-mlake needs `read_ipc_file`), as orca's own `data`
+environment does. AV2 is licensed CC BY-NC-SA 4.0.
 
 ## Layout
 
@@ -463,7 +465,7 @@ rest is Mojo. AV2 is licensed CC BY-NC-SA 4.0.
 - `src/main.mojo` — CLI
 - `src/refinery/av2.mojo` — scoring tracks against AV2 annotations
 - `src/av2_pipeline_a.mojo`, `src/av2_logs.mojo` — the orca pipeline and its keys dataset
-- `scripts/av2_fetch.py` — an AV2 log to a work directory
+- `src/refinery/av2_fetch.mojo` — an AV2 log to a work directory
 
 ## License
 

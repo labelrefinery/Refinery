@@ -79,10 +79,6 @@ libcurl = ">=8,<9"
 libsqlite = ">=3.45,<4"
 libpq = ">=16,<19"
 postgresql = ">=16,<19"
-# scripts/av2_fetch.py: AV2's Feather files are LZ4-compressed Arrow IPC.
-python = ">=3.12,<3.15"
-pyarrow = ">=17"
-numpy = ">=2"
 
 [feature.orca.activation.env]
 DEP_INC = "-I ../../magmalake/orca.mojo/src -I ../../magmalake/dista.mojo/src -I ../../magmalake/memory-region.mojo/src -I ../../magmalake/arrow-mlake.mojo/src -I ../../magmalake/parquet.mojo/src -I ../../magmalake/parquet.mojo/full/src -I ../../magmalake/threads.mojo/src -I ../../magmalake/threads.mojo/compat -I ../../magmalake/thrift.mojo/src -I ../../magmalake/hashes.mojo/src -I ../../magmalake/snappy.mojo/src -I ../../magmalake/deflate.mojo/src -I ../../magmalake/avro.mojo/src -I ../../magmalake/roaring.mojo/src -I ../../magmalake/objectstore.mojo/src -I ../../magmalake/zstd.mojo/src -I ../../magmalake/lz4.mojo/src -I ../../magmalake/brotli.mojo/src -I ../../magmalake/sqlite.mojo -I ../../magmalake/postgres.mojo/src -I ../../magmalake/iceberg.mojo/src"

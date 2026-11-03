@@ -176,7 +176,7 @@ def run_geometry(
 
     Without `proprioception` there is no `joints.csv` and no forward-kinematics
     self-mask: the work directory's sweeps arrive with the ego's own returns
-    already removed, as a car's are (`scripts/av2_fetch.py`).
+    already removed, as a car's are (`refinery.av2_fetch`).
     `fit_terrain_to_drive` sizes the terrain grid to the path rather than the
     site (`build_terrain`).
     """
