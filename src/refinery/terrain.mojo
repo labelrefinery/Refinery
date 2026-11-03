@@ -46,6 +46,8 @@ feature that must not separate terrain from an object, so the fill ignores
 slope and reasons about connectivity instead.
 """
 
+from std.math import ceil, floor
+
 from stone import GridSpec, TerrainGrid, Vec3
 
 from .io import Pose
@@ -143,6 +145,7 @@ def build_terrain(
     sweeps_y: List[List[Float64]],
     sweeps_z: List[List[Float64]],
     poses: List[Pose],
+    fit_to_drive: Bool = False,
 ) raises -> TerrainModel:
     """Accumulate every sweep, then grow the ground surface from the drive.
 
@@ -150,10 +153,30 @@ def build_terrain(
     advantage in its purest form: every pass over the same ground adds a
     viewpoint, so a cell seen edge-on early is seen properly later, and nothing
     has to be decided in real time.
+
+    The grid is `GRID_EXTENT_M` either side of the map origin, which covers a
+    machine working a site. With `fit_to_drive` it covers the whole path
+    instead, `GRID_EXTENT_M` beyond its furthest pose on every side, on the
+    same one-metre lattice: a car crosses a few hundred metres in a log.
     """
     var spec = GridSpec(
         -GRID_EXTENT_M, -GRID_EXTENT_M, GRID_CELL_M, GRID_CELLS, GRID_CELLS
     )
+    if fit_to_drive and len(poses) > 0:
+        var lo_x = poses[0].tx
+        var hi_x = poses[0].tx
+        var lo_y = poses[0].ty
+        var hi_y = poses[0].ty
+        for i in range(1, len(poses)):
+            lo_x = min(lo_x, poses[i].tx)
+            hi_x = max(hi_x, poses[i].tx)
+            lo_y = min(lo_y, poses[i].ty)
+            hi_y = max(hi_y, poses[i].ty)
+        var ox = floor((lo_x - GRID_EXTENT_M) / GRID_CELL_M) * GRID_CELL_M
+        var oy = floor((lo_y - GRID_EXTENT_M) / GRID_CELL_M) * GRID_CELL_M
+        var nx = Int(ceil((hi_x + GRID_EXTENT_M - ox) / GRID_CELL_M))
+        var ny = Int(ceil((hi_y + GRID_EXTENT_M - oy) / GRID_CELL_M))
+        spec = GridSpec(ox, oy, GRID_CELL_M, nx, ny)
     var grid = TerrainGrid(spec)
     var count = spec.cell_count()
 

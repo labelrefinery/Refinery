@@ -1,0 +1,12 @@
+# Ten Argoverse 2 Sensor logs from datasets/av2/sensor/val (annotated), the
+# first ten in the bucket's listing. One log ID per line.
+02678d04-cc9f-3148-9f95-1ba66347dff9
+02a00399-3857-444e-8db3-a8f58489c394
+04994d08-156c-3018-9717-ba0e29be8153
+05fa5048-f355-3274-b565-c0ddc547b315
+070bbf42-31d3-3aa9-aca4-c262afc9077d
+0aa4e8f5-2f9a-39a1-8f80-c2fdde4405a2
+0b5142c1-420b-3fea-9e98-b87327ae22c6
+0b86f508-5df9-4a46-bc59-5b9536dbde9f
+0bae3b5e-417d-3b03-abaa-806b433233b8
+0c3bad78-9f1e-395d-a376-2eb7499229fd

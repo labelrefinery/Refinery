@@ -6,6 +6,10 @@
 and `sweeps/`. The output is the tracker CSV schema OfflinePoly reads, so the
 next stage is a pipe rather than an adapter.
 
+An Argoverse 2 log converted by `scripts/av2_fetch.py` runs with
+`--proprioception off --fit-terrain on`: a car has no joints to mask, and its
+drive leaves the site-sized terrain grid.
+
 The pipeline itself lives in `refinery.stages`, so the Restate executor can run
 the same code in-process rather than re-invoking this binary per call.
 """
@@ -20,7 +24,8 @@ def main() raises:
     if len(args) < 3:
         print(
             "usage: refinery <work_dir> <out.csv> [--accel-var V]"
-            " [--meas-var V]"
+            " [--meas-var V] [--terrain on|off] [--reverse on|off]"
+            " [--proprioception on|off] [--fit-terrain on|off]"
         )
         return
 
@@ -30,6 +35,8 @@ def main() raises:
     var measurement_var = 0.25
     var use_terrain = True
     var reverse = False
+    var proprioception = True
+    var fit_terrain = False
     var detections_csv = String("")
     var i = 3
     while i + 1 < len(args):
@@ -41,6 +48,10 @@ def main() raises:
             use_terrain = args[i + 1] == "on"
         elif args[i] == "--reverse":
             reverse = args[i + 1] == "on"
+        elif args[i] == "--proprioception":
+            proprioception = args[i + 1] == "on"
+        elif args[i] == "--fit-terrain":
+            fit_terrain = args[i + 1] == "on"
         elif args[i] == "--detections":
             detections_csv = String(args[i + 1])
         i += 2
@@ -52,5 +63,12 @@ def main() raises:
         return
 
     _ = run_geometry(
-        work, out_path, accel_var, measurement_var, use_terrain, reverse
+        work,
+        out_path,
+        accel_var,
+        measurement_var,
+        use_terrain,
+        reverse,
+        proprioception,
+        fit_terrain,
     )

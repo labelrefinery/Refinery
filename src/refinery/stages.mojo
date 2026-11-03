@@ -11,6 +11,7 @@ are also returned structurally for callers that would rather not parse.
 """
 
 from refinery.io import (
+    Joints,
     Sweep,
     read_csv_rows,
     read_joints,
@@ -168,14 +169,25 @@ def run_geometry(
     measurement_var: Float64 = 0.25,
     use_terrain: Bool = True,
     reverse: Bool = False,
+    proprioception: Bool = True,
+    fit_terrain_to_drive: Bool = False,
 ) raises -> StageMetrics:
-    """Geometry mode: sweeps and proprioception in, tracker CSV out."""
+    """Geometry mode: sweeps and proprioception in, tracker CSV out.
+
+    Without `proprioception` there is no `joints.csv` and no forward-kinematics
+    self-mask: the work directory's sweeps arrive with the ego's own returns
+    already removed, as a car's are (`scripts/av2_fetch.py`).
+    `fit_terrain_to_drive` sizes the terrain grid to the path rather than the
+    site (`build_terrain`).
+    """
     var metrics = StageMetrics.empty()
     var per_frame = List[List[Detection]]()
     var frame_times = List[Float64]()
 
     var poses = read_poses(work + "/tf.csv")
-    var joints = read_joints(work + "/joints.csv")
+    var joints = List[Joints]()
+    if proprioception:
+        joints = read_joints(work + "/joints.csv")
     var index = read_csv_rows(work + "/sweeps/index.csv")
     metrics.frames = len(index)
     print(
@@ -203,16 +215,21 @@ def run_geometry(
         # terrain calibration needs it as much as the clusterer does: the
         # driven cells are exactly where the machine is standing, so leaving
         # its own returns in makes "known ground" contain a 3 m machine.
-        var mask = ego_mask(poses[f], joints[f])
         var fx = List[Float64]()
         var fy = List[Float64]()
         var fz = List[Float64]()
-        for i in range(len(sweep)):
-            if mask.masks(sweep.x[i], sweep.y[i], sweep.z[i]):
-                continue
-            fx.append(sweep.x[i])
-            fy.append(sweep.y[i])
-            fz.append(sweep.z[i])
+        if proprioception:
+            var mask = ego_mask(poses[f], joints[f])
+            for i in range(len(sweep)):
+                if mask.masks(sweep.x[i], sweep.y[i], sweep.z[i]):
+                    continue
+                fx.append(sweep.x[i])
+                fy.append(sweep.y[i])
+                fz.append(sweep.z[i])
+        else:
+            fx = sweep.x.copy()
+            fy = sweep.y.copy()
+            fz = sweep.z.copy()
         ego_points += len(sweep) - len(fx)
         xs.append(fx^)
         ys.append(fy^)
@@ -229,7 +246,7 @@ def run_geometry(
         "% )",
     )
 
-    var terrain = build_terrain(xs, ys, zs, poses)
+    var terrain = build_terrain(xs, ys, zs, poses, fit_terrain_to_drive)
     print(
         "terrain: observed cells",
         terrain.observed_cells,
