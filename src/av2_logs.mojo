@@ -5,7 +5,10 @@
 `list.txt` has one log ID per line (`#` starts a comment). Each becomes a row
 `(log_id, prefix)`, appended as one snapshot; IDs already in the table are
 skipped, so adding logs is running this again with a longer list, and the
-snapshot it makes is what orca's keyed sensors watch.
+snapshot it makes is what orca's keyed sensors watch. The warehouse is a
+directory or a location in object storage (`s3://bucket/warehouse`, through
+objectstore, from the `AWS_*` environment or the instance role), as
+`ORCA_WAREHOUSE` is for orca.
 """
 
 from std.sys import argv
@@ -13,6 +16,7 @@ from std.sys import argv
 from iceberg.append import prepare_append
 from iceberg.batch import ColumnBuilder, batch_of
 from iceberg.catalog.filesystem import FilesystemCatalog
+from iceberg.io import FileIO
 from iceberg.schema import Schema
 from iceberg.transforms import PartitionSpec
 from iceberg.values import Datum
@@ -38,7 +42,11 @@ def main() raises:
     with open(String(args[2]), "r") as f:
         text = f.read()
 
-    var cat = FilesystemCatalog.local(String(args[1]))
+    var root = String(args[1])
+    var cat = (
+        FilesystemCatalog(String(root.rstrip("/")), FileIO()) if "://" in root
+        and not root.startswith("file://") else FilesystemCatalog.local(root)
+    )
     var schema = Schema.parse(SCHEMA)
     if not cat.table_exists("av2", "logs"):
         _ = cat.create_table(

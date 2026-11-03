@@ -1,0 +1,398 @@
+# labelrefinery on AWS with orca's ec2 runner: one stack, so it's reviewed as
+# one file and deleted as one stack (deploy/aws/README.md).
+#
+# - a VPC with one public subnet in the Availability Zone given, and a
+#   gateway endpoint for S3;
+# - the control instance, always on: Postgres, orca's scheduler
+#   (ORCA_RUNNER=ec2) and orca ui, the AV2 slice viewer and LabelControl's
+#   site, as containers, with Caddy in front getting Let's Encrypt
+#   certificates for each;
+# - what runs need: a bucket (warehouse, logs, view bundles), a repository
+#   for the image, a role and profile for run instances, a security group
+#   they share. A run is one instance (Pipeline A calls no dista tasks),
+#   started by the scheduler and terminating itself when the run ends;
+# - a Budgets alert.
+#
+# The UIs are public for reading. orca ui acts only with a login (orca user
+# add, in the scheduler's container); the viewer and LabelControl are
+# read-only. Nothing else accepts a connection from outside: Postgres takes
+# the run instances' only, and they take each other's only.
+AWSTemplateFormatVersion: "2010-09-09"
+Description: labelrefinery - orca with the ec2 runner, Pipeline A over AV2, its viewer and LabelControl
+
+Parameters:
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-2a
+  ControlInstanceType:
+    Type: String
+    Default: t4g.large
+  RunInstanceType:
+    Type: String
+    Default: c7g.large
+    Description: What each run of av2_pipeline_a runs on (Graviton; the image is arm64)
+  AllowedRunTypes:
+    Type: CommaDelimitedList
+    Default: "c7g.large,c7g.xlarge,c7g.2xlarge,c7g.4xlarge"
+    Description: The only instance types the scheduler may start
+  VcpuBudget:
+    Type: Number
+    Default: 16
+    Description: The most vCPUs all runs together may hold (ORCA_VCPU_BUDGET); 16 is 8 c7g.large
+  Ami:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ecs/optimized-ami/amazon-linux-2023/arm64/recommended/image_id
+    Description: arm64 Amazon Linux 2023 with Docker, for the control and run instances
+  ImageTag:
+    Type: String
+    Default: dev
+    Description: The tag of the refinery image in the stack's repository
+  Domain:
+    Type: String
+    Default: ""
+    Description: Optional. With it, the UIs answer at orca.<Domain>, av2.<Domain> and labels.<Domain> too, once A records point at PublicAddress
+  DbPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    # It goes into a shell script and a URL as it is.
+    AllowedPattern: "[A-Za-z0-9]+"
+  BudgetEmail:
+    Type: String
+  BudgetDollars:
+    Type: Number
+    Default: 100
+
+Conditions:
+  HasDomain: !Not [!Equals [!Ref Domain, ""]]
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.43.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags: [{Key: Name, Value: refinery}]
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.43.0.0/20
+      AvailabilityZone: !Ref AvailabilityZone
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: refinery}]
+  Gateway:
+    Type: AWS::EC2::InternetGateway
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: {VpcId: !Ref Vpc, InternetGatewayId: !Ref Gateway}
+  Routes:
+    Type: AWS::EC2::RouteTable
+    Properties: {VpcId: !Ref Vpc}
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties: {RouteTableId: !Ref Routes, DestinationCidrBlock: 0.0.0.0/0, GatewayId: !Ref Gateway}
+  SubnetRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref Subnet, RouteTableId: !Ref Routes}
+  # The stack's bucket is in-region, so its traffic stays off the internet
+  # and costs nothing. (The public argoverse bucket is in us-east-1 and is
+  # read over the internet gateway.)
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      RouteTableIds: [!Ref Routes]
+
+  Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub refinery-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      LifecycleConfiguration:
+        Rules:
+          - {Id: logs, Status: Enabled, Prefix: logs/, ExpirationInDays: 30}
+  Repository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: refinery
+      ImageScanningConfiguration: {ScanOnPush: true}
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {"rules": [{"rulePriority": 1, "description": "keep the last 5",
+            "selection": {"tagStatus": "any", "countType": "imageCountMoreThan", "countNumber": 5},
+            "action": {"type": "expire"}}]}
+
+  RunGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: refinery run instances, which talk to each other only
+      VpcId: !Ref Vpc
+  RunGroupSelf:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref RunGroup
+      SourceSecurityGroupId: !Ref RunGroup
+      IpProtocol: tcp
+      FromPort: 0
+      ToPort: 65535
+  ControlGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: refinery control instance, public for HTTP(S) only
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0}
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0}
+        - {IpProtocol: tcp, FromPort: 5432, ToPort: 5432, SourceSecurityGroupId: !Ref RunGroup}
+
+  # What both roles may do with data: the stack's bucket, read and write;
+  # the public AV2 dataset, read. objectstore signs with the instance role
+  # whenever it has one, so reading a public bucket needs the role's leave.
+  DataPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+            Resource: !Sub ${Bucket.Arn}/*
+          - Effect: Allow
+            Action: s3:ListBucket
+            Resource: !GetAtt Bucket.Arn
+          - Effect: Allow
+            Action: s3:GetObject
+            Resource: arn:aws:s3:::argoverse/datasets/av2/*
+          - Effect: Allow
+            Action: s3:ListBucket
+            Resource: arn:aws:s3:::argoverse
+          - Effect: Allow
+            Action: [ecr:BatchGetImage, ecr:GetDownloadUrlForLayer]
+            Resource: !GetAtt Repository.Arn
+          - Effect: Allow
+            Action: ecr:GetAuthorizationToken
+            Resource: "*"
+
+  RunRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement: [{Effect: Allow, Principal: {Service: ec2.amazonaws.com}, Action: sts:AssumeRole}]
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - !Ref DataPolicy
+  RunProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties: {Roles: [!Ref RunRole]}
+
+  ControlRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement: [{Effect: Allow, Principal: {Service: ec2.amazonaws.com}, Action: sts:AssumeRole}]
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - !Ref DataPolicy
+      Policies:
+        - PolicyName: run-instances
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Only instances tagged for orca, of the allowed types, in the
+              # stack's subnet and group, with its run profile.
+              - Effect: Allow
+                Action: ec2:RunInstances
+                Resource: !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                Condition:
+                  StringEquals: {ec2:InstanceType: !Ref AllowedRunTypes}
+                  "Null": {"aws:RequestTag/orca.run": "false"}
+              - Effect: Allow
+                Action: ec2:RunInstances
+                Resource:
+                  - !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:volume/*
+                  - !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
+                  - !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${Subnet}
+                  - !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${RunGroup}
+                  - !Sub arn:aws:ec2:${AWS::Region}::image/*
+                  - !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:spot-instances-request/*
+              - Effect: Allow
+                Action: ec2:CreateTags
+                Resource: !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:*/*
+                Condition:
+                  StringEquals: {ec2:CreateAction: RunInstances}
+              - Effect: Allow
+                Action: ec2:TerminateInstances
+                Resource: !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                Condition:
+                  "Null": {"aws:ResourceTag/orca.run": "false"}
+              - Effect: Allow
+                Action: ec2:DescribeInstances
+                Resource: "*"
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt RunRole.Arn
+  ControlProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties: {Roles: [!Ref ControlRole]}
+
+  ControlAddress:
+    Type: AWS::EC2::EIP
+    Properties: {Domain: vpc}
+  Control:
+    Type: AWS::EC2::Instance
+    DependsOn: DefaultRoute
+    Properties:
+      ImageId: !Ref Ami
+      InstanceType: !Ref ControlInstanceType
+      SubnetId: !Ref Subnet
+      SecurityGroupIds: [!Ref ControlGroup]
+      IamInstanceProfile: !Ref ControlProfile
+      # Hop limit 2: the containers reach the instance role through IMDSv2.
+      MetadataOptions: {HttpTokens: required, HttpPutResponseHopLimit: 2}
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: {VolumeSize: 40, VolumeType: gp3, Encrypted: true}
+      Tags: [{Key: Name, Value: refinery-control}]
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            # The control instance: Postgres, orca's scheduler and UI, the
+            # AV2 viewer, LabelControl and Caddy, as containers that restart
+            # with the instance. The script runs on first boot only.
+            set -eux
+            # Docker without ECS: this AMI's agent would look for a cluster.
+            systemctl disable --now ecs || true
+            systemctl enable --now docker
+            command -v aws || dnf install -y awscli
+            token=$(curl -sX PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 300')
+            md() { curl -s -H "X-aws-ec2-metadata-token: $token" http://169.254.169.254/latest/meta-data/$1; }
+            ip=$(md local-ipv4)
+            dashed=$(echo ${PublicIp} | tr . -)
+            orca_hosts="orca.$dashed.sslip.io"; av2_hosts="av2.$dashed.sslip.io"; labels_hosts="labels.$dashed.sslip.io"
+            if [ -n "${Domain}" ]; then
+              orca_hosts="orca.${Domain}, $orca_hosts"; av2_hosts="av2.${Domain}, $av2_hosts"
+              labels_hosts="labels.${Domain}, $labels_hosts"
+            fi
+            registry=${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
+            image=$registry/refinery:${ImageTag}
+            login="command -v aws >/dev/null || dnf install -y awscli; systemctl disable --now ecs || true; aws ecr get-login-password --region ${AWS::Region} | docker login --username AWS --password-stdin $registry"
+            # The image is pushed after the stack is made, so wait for it.
+            until sh -c "$login" && docker pull $image; do sleep 30; done
+            docker network create refinery || true
+            mkdir -p /var/lib/refinery/pg /var/lib/refinery/caddy /var/lib/refinery/stage /var/lib/refinery/labelcontrol
+            docker run -d --name postgres --restart always --network refinery -p 5432:5432 \
+              -e POSTGRES_USER=orca -e POSTGRES_DB=orca -e POSTGRES_PASSWORD='${DbPassword}' \
+              -v /var/lib/refinery/pg:/var/lib/postgresql/data postgres:17-bookworm -c synchronous_commit=on
+            until docker exec postgres pg_isready -U orca -d orca; do sleep 2; done
+            cat > /etc/refinery.env << EOF
+            ORCA_DATABASE_URL=postgresql://orca:${DbPassword}@postgres:5432/orca
+            ORCA_EC2_DATABASE_URL=postgresql://orca:${DbPassword}@$ip:5432/orca
+            ORCA_RUNNER=ec2
+            AWS_REGION=${AWS::Region}
+            ORCA_EC2_AMI=${Ami}
+            ORCA_EC2_SUBNET=${Subnet}
+            ORCA_EC2_SECURITY_GROUP=${RunGroup}
+            ORCA_EC2_PROFILE=${RunProfile}
+            ORCA_EC2_HEAD_TYPE=${RunInstanceType}
+            ORCA_EC2_PREAMBLE=$login
+            ORCA_VCPU_BUDGET=${VcpuBudget}
+            ORCA_WAREHOUSE=s3://${Bucket}/warehouse
+            ORCA_LOGS=s3://${Bucket}/logs
+            ORCA_LOG_STAGE=/var/lib/refinery/stage
+            ORCA_RUN_ENV=AV2_VIEWS,AV2_PREFIX
+            AV2_VIEWS=s3://${Bucket}/views/av2
+            AV2_PREFIX=sensor/val
+            ORCA_UI_ADDR=0.0.0.0:8270
+            ORCA_UI_LOGIN=required
+            ORCA_UI_SECURE_COOKIES=1
+            ORCA_UI_TRUST_PROXY=1
+            AV2_VIEWER_ADDR=0.0.0.0:8280
+            EOF
+            # The scheduler registers the pipeline from the image (its runs'
+            # instances pull the same image), then ticks.
+            docker run -d --name scheduler --restart always --network refinery --env-file /etc/refinery.env \
+              -v /var/lib/refinery/stage:/var/lib/refinery/stage --entrypoint /bin/sh $image -c \
+              "orca register --image $image /opt/orca/pipelines/av2-pipeline-a && exec orca scheduler"
+            docker run -d --name ui --restart always --network refinery --env-file /etc/refinery.env \
+              -v /var/lib/refinery/stage:/var/lib/refinery/stage $image ui
+            docker run -d --name viewer --restart always --network refinery --env-file /etc/refinery.env \
+              --entrypoint /opt/orca/bin/av2-viewer $image
+            # LabelControl reads an ops.db copied to s3://<bucket>/labelcontrol/ops.db, if there is one.
+            aws s3 cp s3://${Bucket}/labelcontrol/ops.db /var/lib/refinery/labelcontrol/ops.db || true
+            docker run -d --name labelcontrol --restart always --network refinery \
+              -e LABELCONTROL_ADDR=0.0.0.0:20000 -e LABELCONTROL_READONLY=1 \
+              -e LABELCONTROL_OPS=/var/lib/labelcontrol/ops.db \
+              -e LABELCONTROL_ALLOWED_HOSTS="$(echo "$labels_hosts" | tr -d ' ')" \
+              -v /var/lib/refinery/labelcontrol:/var/lib/labelcontrol \
+              --entrypoint /opt/orca/bin/labelcontrol $image
+            cat > /var/lib/refinery/Caddyfile << EOF
+            $orca_hosts {
+              reverse_proxy ui:8270
+            }
+            $av2_hosts {
+              encode gzip
+              reverse_proxy viewer:8280
+            }
+            $labels_hosts {
+              reverse_proxy labelcontrol:20000
+            }
+            EOF
+            docker run -d --name caddy --restart always --network refinery -p 80:80 -p 443:443 \
+              -v /var/lib/refinery/Caddyfile:/etc/caddy/Caddyfile -v /var/lib/refinery/caddy:/data caddy:2.10
+            echo "refinery up: https://orca.$dashed.sslip.io https://av2.$dashed.sslip.io https://labels.$dashed.sslip.io"
+          - {PublicIp: !Ref ControlAddress}
+  ControlAddressAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties: {InstanceId: !Ref Control, AllocationId: !GetAtt ControlAddress.AllocationId}
+
+  Budget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: refinery
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: {Amount: !Ref BudgetDollars, Unit: USD}
+      NotificationsWithSubscribers:
+        - Notification: {NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80}
+          Subscribers: [{SubscriptionType: EMAIL, Address: !Ref BudgetEmail}]
+        - Notification: {NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100}
+          Subscribers: [{SubscriptionType: EMAIL, Address: !Ref BudgetEmail}]
+
+Outputs:
+  OrcaUrl:
+    Value: !Sub
+      - https://orca.${Dashed}.sslip.io
+      - Dashed: !Join ["-", !Split [".", !Ref ControlAddress]]
+  ViewerUrl:
+    Value: !Sub
+      - https://av2.${Dashed}.sslip.io
+      - Dashed: !Join ["-", !Split [".", !Ref ControlAddress]]
+  LabelControlUrl:
+    Value: !Sub
+      - https://labels.${Dashed}.sslip.io
+      - Dashed: !Join ["-", !Split [".", !Ref ControlAddress]]
+  DomainUrls:
+    Condition: HasDomain
+    Value: !Sub https://orca.${Domain} https://av2.${Domain} https://labels.${Domain}
+  Repository:
+    Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/refinery
+  Bucket:
+    Value: !Ref Bucket
+  ControlInstance:
+    Value: !Ref Control
+  PublicAddress:
+    Value: !Ref ControlAddress

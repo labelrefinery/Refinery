@@ -415,13 +415,32 @@ pixi run -e orca ./build/av2-pipeline-a run --partitions @all
 pixi run -e orca ./build/av2-pipeline-a run --partitions 02678d04-cc9f-3148-9f95-1ba66347dff9
 ```
 
-`src/av2_pipeline_a.mojo` is four steps. `fetch` downloads a log and lays it out
+`src/av2_pipeline_a.mojo` is five steps. `fetch` downloads a log and lays it out
 as a work directory (`refinery.av2_fetch`; a converted log is kept). `label`
-runs `run_geometry` on it and appends the tracks to `av2.tracks_a`. `score`
-matches them to the log's annotations (`refinery.av2`) and appends a row to
-`av2.scores_a`. `summary` gathers the run's scores. The partitions are the
-`log_id` column of `av2.logs` (orca's keyed partitions), ten logs per run; add
-logs to the list and run `av2-logs` again to extend it.
+runs `run_geometry` on it and appends the tracks to `av2.tracks_a`. `view`
+publishes the log's view bundle (`refinery.av2_view`: poses, annotations,
+tracks, and each sweep's points as int16 centimetres) to `AV2_VIEWS`, for the
+viewer. `score` matches the tracks to the log's annotations (`refinery.av2`)
+and appends a row to `av2.scores_a`. `summary` gathers the run's scores. The
+partitions are the `log_id` column of `av2.logs` (orca's keyed partitions),
+five logs per run and at most eight runs at once; add logs to the list and run
+`av2-logs` again to extend it. `configs/av2_val.txt` lists all 150 val logs.
+
+```sh
+pixi run -e orca av2-viewer         # http://127.0.0.1:8280
+```
+
+**The slice viewer** (`src/av2_viewer.mojo`, `viewer/index.html`) lists the
+scored logs from `av2.scores_a` and, for the one picked, plays any slice of its
+sweeps in 3D: the points, the annotated cuboids and Pipeline A's tracks. It
+reads only the warehouse and the bundles, so it runs anywhere they're
+reachable, and answers `GET` alone.
+
+**On AWS** ([deploy/aws](deploy/aws/README.md)), one small always-on instance
+holds Postgres, orca's scheduler and UI, the viewer and LabelControl, and each
+run of the pipeline gets an instance of its own from orca's `ec2` runner,
+which terminates when the run ends. The image (`deploy/Dockerfile`) compiles
+everything from the revisions `deploy/deps.txt` pins.
 
 Two things change for a car, both opt-in so the sitegen scenes give the same
 labels as before: there are no joints, so the ego's own returns are dropped by
@@ -454,8 +473,8 @@ objectstore's S3 client, many objects per request batch (a 160 MB log in about
 ten seconds). AV2's Feather files are LZ4-compressed Arrow IPC files, read by
 arrow-mlake's `read_ipc_file` with lz4-mojo's frame decoder. The environment
 builds against sibling checkouts of the magmalake repos (`../../magmalake/*`,
-each at main; arrow-mlake needs `read_ipc_file`), as orca's own `data`
-environment does. AV2 is licensed CC BY-NC-SA 4.0.
+at the revisions `deploy/deps.txt` pins; arrow-mlake needs `read_ipc_file`), as
+orca's own `data` environment does. AV2 is licensed CC BY-NC-SA 4.0.
 
 ## Layout
 
@@ -466,6 +485,8 @@ environment does. AV2 is licensed CC BY-NC-SA 4.0.
 - `src/refinery/av2.mojo` — scoring tracks against AV2 annotations
 - `src/av2_pipeline_a.mojo`, `src/av2_logs.mojo` — the orca pipeline and its keys dataset
 - `src/refinery/av2_fetch.mojo` — an AV2 log to a work directory
+- `src/refinery/av2_view.mojo`, `src/av2_viewer.mojo`, `viewer/` — view bundles and the slice viewer
+- `deploy/` — the image, its pinned sources, and the AWS stack
 
 ## License
 

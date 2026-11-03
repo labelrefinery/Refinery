@@ -59,9 +59,12 @@ orchestrator = { cmd = "./build/orchestrator", depends-on = ["build-orchestrator
 # The orca environment: Pipeline A over Argoverse 2 as an orca pipeline
 # (src/av2_pipeline_a.mojo). orca isn't a package; like its own `data`
 # environment, it builds against sibling checkouts of the magmalake repos
-# (../../magmalake/*), each at main. It leaves out the default feature, whose
-# packaged iceberg-mojo would be a second copy of the iceberg it builds from
-# source. The pins below are orca's `data` environment's.
+# (../../magmalake/*), each at the revision deploy/deps.txt pins. It leaves
+# out the default feature, whose packaged iceberg-mojo would be a second copy
+# of the iceberg it builds from source. The pins below are orca's `data`
+# environment's. The same environment builds orca's own binary and
+# LabelControl's site (from ../LabelControl), so the deploy image
+# (deploy/Dockerfile) needs only this one.
 [feature.orca.dependencies]
 mojo-compiler = "==1.2.0"
 hungarian-mojo = { git = "https://github.com/labelrefinery/Hungarian.mojo.git", rev = "ff7e457fd4bb59b14fea02b19d39d009d20ceb98" }
@@ -81,13 +84,18 @@ libpq = ">=16,<19"
 postgresql = ">=16,<19"
 
 [feature.orca.activation.env]
-DEP_INC = "-I ../../magmalake/orca.mojo/src -I ../../magmalake/dista.mojo/src -I ../../magmalake/memory-region.mojo/src -I ../../magmalake/arrow-mlake.mojo/src -I ../../magmalake/parquet.mojo/src -I ../../magmalake/parquet.mojo/full/src -I ../../magmalake/threads.mojo/src -I ../../magmalake/threads.mojo/compat -I ../../magmalake/thrift.mojo/src -I ../../magmalake/hashes.mojo/src -I ../../magmalake/snappy.mojo/src -I ../../magmalake/deflate.mojo/src -I ../../magmalake/avro.mojo/src -I ../../magmalake/roaring.mojo/src -I ../../magmalake/objectstore.mojo/src -I ../../magmalake/zstd.mojo/src -I ../../magmalake/lz4.mojo/src -I ../../magmalake/brotli.mojo/src -I ../../magmalake/sqlite.mojo -I ../../magmalake/postgres.mojo/src -I ../../magmalake/iceberg.mojo/src"
+DEP_INC = "-I ../../magmalake/orca.mojo/src -I ../../magmalake/dista.mojo/src -I ../../magmalake/k8s.mojo/src -I ../../magmalake/memory-region.mojo/src -I ../../magmalake/arrow-mlake.mojo/src -I ../../magmalake/parquet.mojo/src -I ../../magmalake/parquet.mojo/full/src -I ../../magmalake/threads.mojo/src -I ../../magmalake/threads.mojo/compat -I ../../magmalake/thrift.mojo/src -I ../../magmalake/hashes.mojo/src -I ../../magmalake/snappy.mojo/src -I ../../magmalake/deflate.mojo/src -I ../../magmalake/avro.mojo/src -I ../../magmalake/roaring.mojo/src -I ../../magmalake/objectstore.mojo/src -I ../../magmalake/zstd.mojo/src -I ../../magmalake/lz4.mojo/src -I ../../magmalake/brotli.mojo/src -I ../../magmalake/sqlite.mojo -I ../../magmalake/postgres.mojo/src -I ../../magmalake/iceberg.mojo/src"
 ORCA_WAREHOUSE = "runs/av2/warehouse"
 AV2_ROOT = "runs/av2"
 
 [feature.orca.tasks]
 build-av2-logs = { cmd = "mkdir -p build && mojo build -I src $DEP_INC src/av2_logs.mojo -o build/av2-logs", description = "Build the av2.logs writer" }
 av2-logs = { cmd = "./build/av2-logs $ORCA_WAREHOUSE configs/av2_sample.txt", depends-on = ["build-av2-logs"], description = "Write av2.logs from configs/av2_sample.txt" }
+test-av2-view = { cmd = "mojo run -I src $DEP_INC test/test_av2_view.mojo", description = "The AV2 view bundle and the viewer's path checks" }
+build-orca = { cmd = "mkdir -p build && mojo build $DEP_INC ../../magmalake/orca.mojo/bin/scheduler.mojo -o build/orca", description = "Build orca's scheduler and UI binary from the sibling checkout" }
+build-labelcontrol = { cmd = "mkdir -p build && mojo build -I ../LabelControl/src $DEP_INC ../LabelControl/src/server.mojo -o build/labelcontrol", description = "Build LabelControl's site from the sibling checkout" }
+build-av2-viewer = { cmd = "mkdir -p build && mojo build -I src $DEP_INC src/av2_viewer.mojo -o build/av2-viewer", description = "Build the AV2 slice viewer" }
+av2-viewer = { cmd = "./build/av2-viewer", depends-on = ["build-av2-viewer"], description = "Serve the AV2 slice viewer on 127.0.0.1:8280" }
 av2-pipeline-a = { cmd = "mkdir -p build && mojo build -I src $DEP_INC src/av2_pipeline_a.mojo -o build/av2-pipeline-a", description = "Build Pipeline A over AV2 as an orca pipeline" }
 
 [environments]

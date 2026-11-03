@@ -12,7 +12,10 @@ The partitions are the `log_id`s of the warehouse dataset `av2.logs`
    work directory (`refinery.av2_fetch`); a log already converted is kept.
 2. **label** runs Pipeline A on it (`run_geometry` with no proprioception and a
    terrain grid fitted to the drive) and appends its tracks to `av2.tracks_a`.
-3. **score** matches the tracks to the log's annotations (`refinery.av2`) and
+3. **view** publishes the log's view bundle (`refinery.av2_view`) to
+   `AV2_VIEWS`, which the slice viewer reads: the work directory is on an
+   instance that's gone once the run ends.
+4. **score** matches the tracks to the log's annotations (`refinery.av2`) and
    appends the result to `av2.scores_a`.
 
 Then **summary** adds up the run's scores. Each commit carries orca's lineage
@@ -21,8 +24,14 @@ snapshot a score came from.
 
 Environment: `ORCA_WAREHOUSE` (the Iceberg warehouse), `AV2_ROOT` (work
 directories, the download cache and fetch logs; default `runs/av2`),
-and `AV2_PREFIX` (the split under `datasets/av2/`; default `sensor/val`, whose
-logs are annotated).
+`AV2_PREFIX` (the split under `datasets/av2/`; default `sensor/val`, whose
+logs are annotated) and `AV2_VIEWS` (where view bundles go, a directory or
+`s3://...`; default `<AV2_ROOT>/views`).
+
+Runs: `keys_per_run` logs each, at most `max_runs` at once. With orca's `ec2`
+runner each run is one instance of its own (the pipeline calls no dista
+tasks), so a backfill of the val split's 150 logs is 30 runs, 8 instances at
+a time.
 """
 
 from std.os import getenv
@@ -39,6 +48,7 @@ from orca.tables import append, ensure_table
 
 from refinery.av2 import score_log
 from refinery.av2_fetch import fetch_log
+from refinery.av2_view import publish_view
 from refinery.io import read_csv_rows
 from refinery.stages import run_geometry
 
@@ -174,6 +184,28 @@ def label(mut ctx: Ctx, f: Fetched) raises -> Labeled:
     )
 
 
+def view(mut ctx: Ctx, l: Labeled) raises -> Labeled:
+    """The log's view bundle, for the slice viewer."""
+    var root = _env("AV2_VIEWS", "")
+    if not root:
+        root = String(_env("AV2_ROOT", "runs/av2"), "/views")
+    var t0 = perf_counter_ns()
+    var n = publish_view(l.work, l.log.text, root)
+    ctx.log(
+        String(
+            l.log,
+            ": view bundle, ",
+            n // 1_000_000,
+            " MB to ",
+            root,
+            " in ",
+            Float64(perf_counter_ns() - t0) / 1e9,
+            " s",
+        )
+    )
+    return l.copy()
+
+
 def score(mut ctx: Ctx, l: Labeled) raises -> Scored:
     """The log's tracks against its annotations; one row of `av2.scores_a`."""
     if not exists(l.work + "/annotations.csv"):
@@ -250,8 +282,9 @@ comptime Fetch = Step["fetch", Name, Fetched, fetch, Mapped, retries=2]
 comptime Label = Step[
     "label", Fetched, Labeled, label, Mapped, after=Fetch, writes=[TRACKS]
 ]
+comptime View = Step["view", Labeled, Labeled, view, Mapped, after=Label]
 comptime Score = Step[
-    "score", Labeled, Scored, score, Mapped, after=Label, writes=[SCORES]
+    "score", Labeled, Scored, score, Mapped, after=View, writes=[SCORES]
 ]
 comptime Summary = Step[
     "summary", Seq[Scored], Int, summary, Gather, after=Score
@@ -261,10 +294,12 @@ comptime Av2PipelineA = Pipeline[
     "av2_pipeline_a",
     Fetch,
     Label,
+    View,
     Score,
     Summary,
     partitions=Keyed["av2.logs", "log_id"],
-    keys_per_run=10,
+    keys_per_run=5,
+    max_runs=8,
 ]
 
 

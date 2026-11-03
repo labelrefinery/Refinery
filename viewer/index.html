@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AV2 Slice Viewer</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6b66;
+    --line: #e2e1dc; --accent: #2f6fdb; --sel: #e8f0fd;
+    --gt: #2fa36b; --gt-static: #8c8c84; --track: #f08a24; --scene: #101114;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --muted: #9b9a93;
+      --line: #33332f; --accent: #6d9cf0; --sel: #22304a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --muted: #9b9a93;
+    --line: #33332f; --accent: #6d9cf0; --sel: #22304a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+    padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .totals { color: var(--muted); font-variant-numeric: tabular-nums; }
+  main { display: grid; grid-template-columns: minmax(320px, 420px) 1fr; height: calc(100vh - 49px); }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; height: auto; } #scene { height: 70vh; } }
+  #logs { overflow: auto; border-right: 1px solid var(--line); background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { position: sticky; top: 0; background: var(--panel); font-weight: 600; cursor: pointer; user-select: none; }
+  th.sorted::after { content: " ▾"; color: var(--muted); }
+  th.sorted.asc::after { content: " ▴"; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--bg); }
+  tbody tr.selected { background: var(--sel); }
+  td.id { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  .empty { padding: 16px; color: var(--muted); }
+  #view { display: flex; flex-direction: column; min-width: 0; }
+  #controls { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
+    padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  #controls label { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+  #controls input[type=number] { width: 64px; }
+  #controls input[type=range] { width: 220px; max-width: 40vw; }
+  button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--bg); color: var(--ink); cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  #scene { position: relative; flex: 1; min-height: 320px; background: var(--scene); }
+  #scene canvas { display: block; width: 100%; height: 100%; }
+  #hud { position: absolute; left: 12px; top: 10px; color: #e8e8e4; font: 12px/1.5 ui-monospace, Menlo, monospace;
+    background: rgba(16,17,20,.7); padding: 6px 10px; border-radius: 6px; pointer-events: none; }
+  #legend { position: absolute; right: 12px; top: 10px; color: #e8e8e4; font-size: 12px;
+    background: rgba(16,17,20,.7); padding: 6px 10px; border-radius: 6px; }
+  #legend span { display: inline-block; width: 10px; height: 10px; margin: 0 4px 0 10px; border-radius: 2px; }
+  #legend span:first-child { margin-left: 0; }
+  #status { color: var(--muted); margin-left: auto; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<header>
+  <h1>AV2 · Pipeline A slice viewer</h1>
+  <div class="totals" id="totals">loading scores…</div>
+</header>
+<main>
+  <section id="logs"><div class="empty">Loading…</div></section>
+  <section id="view">
+    <div id="controls">
+      <label>slice <input type="number" id="from" min="0" value="0"> – <input type="number" id="to" min="0" value="0"></label>
+      <button id="play" type="button">▶ play</button>
+      <label>sweep <input type="range" id="frame" min="0" max="0" value="0"></label>
+      <label><input type="checkbox" id="follow" checked> follow ego</label>
+      <label>colour <select id="colour"><option value="height">height</option><option value="intensity">intensity</option></select></label>
+      <span id="status"></span>
+    </div>
+    <div id="scene">
+      <div id="hud">select a log</div>
+      <div id="legend"><span style="background:var(--gt)"></span>annotated (moves)<span style="background:var(--gt-static)"></span>annotated (static)<span style="background:var(--track)"></span>Pipeline A track</div>
+    </div>
+  </section>
+</main>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+const MOVABLE = new Set(["REGULAR_VEHICLE","LARGE_VEHICLE","BUS","BOX_TRUCK","TRUCK","TRUCK_CAB",
+  "VEHICULAR_TRAILER","SCHOOL_BUS","ARTICULATED_BUS","MOTORCYCLE","MOTORCYCLIST","BICYCLE","BICYCLIST",
+  "PEDESTRIAN","WHEELED_RIDER","WHEELED_DEVICE","STROLLER","WHEELCHAIR","DOG","OFFICIAL_SIGNALER"]);
+const $ = (id) => document.getElementById(id);
+const fmt = (v, d = 3) => (v === null || v === undefined || isNaN(v)) ? "–" : Number(v).toFixed(d);
+const key = (t) => Math.round(Number(t) * 1e4);
+
+// ── the logs table ───────────────────────────────────────────────────────────
+let logs = [], sortCol = "recall", sortAsc = false, current = null;
+const COLS = [
+  ["log_id", "log", (r) => r.log_id.slice(0, 8)],
+  ["frames", "sweeps", (r) => r.frames],
+  ["recall", "recall", (r) => fmt(r.recall)],
+  ["movable_recall", "movable", (r) => fmt(r.movable_recall)],
+  ["precision", "prec. floor", (r) => fmt(r.precision)],
+  ["center_error_m", "err m", (r) => fmt(r.center_error_m, 2)],
+];
+function derive(r) {
+  r.recall = r.matched / Math.max(r.annotated, 1);
+  r.movable_recall = r.matched_movable / Math.max(r.annotated_movable, 1);
+  r.precision = r.matched / Math.max(r.predicted, 1);
+  return r;
+}
+function renderTable() {
+  const host = $("logs");
+  if (!logs.length) { host.innerHTML = '<div class="empty">No scored logs yet: av2.scores_a is empty.</div>'; return; }
+  const rows = [...logs].sort((a, b) => {
+    const x = a[sortCol], y = b[sortCol];
+    const c = typeof x === "string" ? x.localeCompare(y) : x - y;
+    return sortAsc ? c : -c;
+  });
+  const t = document.createElement("table");
+  const head = t.createTHead().insertRow();
+  for (const [k, label] of COLS) {
+    const th = document.createElement("th");
+    th.textContent = label;
+    if (k === sortCol) th.className = "sorted" + (sortAsc ? " asc" : "");
+    th.onclick = () => { sortAsc = k === sortCol ? !sortAsc : k === "log_id"; sortCol = k; renderTable(); };
+    head.appendChild(th);
+  }
+  const body = t.createTBody();
+  for (const r of rows) {
+    const tr = body.insertRow();
+    if (current && current.id === r.log_id) tr.className = "selected";
+    tr.title = r.log_id;
+    COLS.forEach(([k, , f], i) => { const td = tr.insertCell(); td.textContent = f(r); if (i === 0) td.className = "id"; });
+    tr.onclick = () => selectLog(r.log_id);
+  }
+  host.replaceChildren(t);
+}
+async function loadScores() {
+  const res = await fetch("/api/logs");
+  const data = await res.json();
+  logs = data.logs.map(derive);
+  const s = logs.reduce((a, r) => { for (const k of ["frames","annotated","annotated_movable","predicted","matched","matched_movable"]) a[k] += r[k]; a.sec += r.label_seconds; return a; },
+    { frames: 0, annotated: 0, annotated_movable: 0, predicted: 0, matched: 0, matched_movable: 0, sec: 0 });
+  $("totals").textContent = logs.length
+    ? `${logs.length} logs · ${s.frames} sweeps · recall ${fmt(s.matched / Math.max(s.annotated, 1))} · movable ${fmt(s.matched_movable / Math.max(s.annotated_movable, 1))} · precision floor ${fmt(s.matched / Math.max(s.predicted, 1))} · ${fmt(1000 * s.sec / Math.max(s.frames, 1), 0)} ms/sweep · snapshot ${data.snapshot}`
+    : "no scores yet";
+  renderTable();
+}
+
+// ── the scene ────────────────────────────────────────────────────────────────
+const host = $("scene");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+host.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x101114);
+const camera = new THREE.PerspectiveCamera(50, 1, 0.5, 2000);
+camera.up.set(0, 0, 1);
+camera.position.set(-40, -40, 45);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+scene.add(new THREE.GridHelper(400, 40, 0x2a2c33, 0x1c1e23).rotateX(Math.PI / 2));
+const pointsGeo = new THREE.BufferGeometry();
+const pointsMat = new THREE.PointsMaterial({ size: 0.12, vertexColors: true, sizeAttenuation: true });
+const cloud = new THREE.Points(pointsGeo, pointsMat);
+scene.add(cloud);
+const boxes = new THREE.Group();
+scene.add(boxes);
+const ego = new THREE.Mesh(new THREE.BoxGeometry(4.8, 2.0, 1.6), new THREE.MeshBasicMaterial({ color: 0x6d9cf0, wireframe: true }));
+scene.add(ego);
+const unitBox = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1));
+const MAT = {
+  gt: new THREE.LineBasicMaterial({ color: 0x2fa36b }),
+  gtStatic: new THREE.LineBasicMaterial({ color: 0x8c8c84 }),
+  track: new THREE.LineBasicMaterial({ color: 0xf08a24 }),
+};
+function resize() {
+  const w = host.clientWidth, h = host.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / Math.max(h, 1);
+  camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(host);
+resize();
+(function loop() { controls.update(); renderer.render(scene, camera); requestAnimationFrame(loop); })();
+
+function parseCsv(text) {
+  const lines = text.trim().split("\n");
+  const head = lines.shift().split(",");
+  return lines.map((l) => { const v = l.split(","), o = {}; head.forEach((h, i) => o[h] = v[i]); return o; });
+}
+function groupBy(rows) {
+  const m = new Map();
+  for (const r of rows) { const k = key(r.t); if (!m.has(k)) m.set(k, []); m.get(k).push(r); }
+  return m;
+}
+function addBox(x, y, z, l, w, h, yaw, mat) {
+  const b = new THREE.LineSegments(unitBox, mat);
+  b.position.set(x, y, z);
+  b.scale.set(l, w, h);
+  b.rotation.z = yaw;
+  boxes.add(b);
+}
+
+const sweepCache = new Map();
+async function loadSweep(id, file) {
+  const k = id + "/" + file;
+  if (!sweepCache.has(k)) {
+    sweepCache.set(k, fetch(`/data/${id}/points/${file}`).then((r) => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
+      .then((b) => new Int16Array(b)));
+    if (sweepCache.size > 64) sweepCache.delete(sweepCache.keys().next().value);
+  }
+  return sweepCache.get(k);
+}
+
+async function selectLog(id) {
+  playing = false; $("play").textContent = "▶ play";
+  history.replaceState(null, "", "?log=" + id);
+  $("status").textContent = "loading " + id.slice(0, 8) + "…";
+  const get = (f) => fetch(`/data/${id}/${f}`).then((r) => r.ok ? r.text() : "");
+  const [meta, tf, sw, ann, tr] = await Promise.all(["view.json", "tf.csv", "sweeps.csv", "annotations.csv", "tracks.csv"].map(get));
+  if (!meta) { $("status").textContent = "no view bundle for " + id; return; }
+  current = {
+    id, meta: JSON.parse(meta),
+    poses: parseCsv(tf).map((p) => ({ t: key(p.t), pos: new THREE.Vector3(+p.x, +p.y, +p.z), q: new THREE.Quaternion(+p.qx, +p.qy, +p.qz, +p.qw) })),
+    sweeps: parseCsv(sw), ann: ann ? groupBy(parseCsv(ann)) : new Map(), tracks: groupBy(parseCsv(tr)),
+  };
+  const n = current.sweeps.length;
+  $("from").max = $("to").max = n - 1;
+  $("from").value = 0; $("to").value = n - 1;
+  applySlice();
+  renderTable();
+  $("status").textContent = `${current.meta.frames} sweeps · ${current.meta.points.toLocaleString()} points in bundle`;
+  const p = current.poses[0];
+  controls.target.copy(p.pos);
+  camera.position.copy(p.pos).add(new THREE.Vector3(-45, -45, 50));
+  show(0);
+}
+function applySlice() {
+  if (!current) return;
+  let a = Math.max(0, Math.min(+$("from").value, current.sweeps.length - 1));
+  let b = Math.max(a, Math.min(+$("to").value, current.sweeps.length - 1));
+  $("from").value = a; $("to").value = b;
+  $("frame").min = a; $("frame").max = b;
+  if (+$("frame").value < a || +$("frame").value > b) $("frame").value = a;
+}
+let showing = 0;
+async function show(i) {
+  if (!current) return;
+  const c = current, s = c.sweeps[i], pose = c.poses[i], k = key(s.t);
+  const ticket = ++showing;
+  const pts = await loadSweep(c.id, s.file);
+  if (ticket !== showing || c !== current) return;
+  const n = pts.length / 4, pos = new Float32Array(n * 3), col = new Float32Array(n * 3);
+  const byHeight = $("colour").value === "height", tmp = new THREE.Color();
+  for (let j = 0; j < n; j++) {
+    const z = pts[j * 4 + 2] / 100;
+    pos[j * 3] = pts[j * 4] / 100; pos[j * 3 + 1] = pts[j * 4 + 1] / 100; pos[j * 3 + 2] = z;
+    const v = byHeight ? Math.min(Math.max((z + 2) / 6, 0), 1) : Math.min(pts[j * 4 + 3] / 100, 1);
+    tmp.setHSL(0.66 - 0.66 * v, 0.85, 0.35 + 0.3 * v);
+    col[j * 3] = tmp.r; col[j * 3 + 1] = tmp.g; col[j * 3 + 2] = tmp.b;
+  }
+  pointsGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  pointsGeo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  pointsGeo.computeBoundingSphere();
+  cloud.position.copy(pose.pos); cloud.quaternion.copy(pose.q);
+  ego.position.copy(pose.pos).add(new THREE.Vector3(1.4, 0, 0.8).applyQuaternion(pose.q)); ego.quaternion.copy(pose.q);
+  boxes.clear();
+  const gt = c.ann.get(k) || [], tr = c.tracks.get(k) || [];
+  for (const a of gt) addBox(+a.x, +a.y, +a.z, +a.l, +a.w, +a.h, +a.yaw, MOVABLE.has(a.category) ? MAT.gt : MAT.gtStatic);
+  for (const t of tr) addBox(+t.x, +t.y, +t.z, +t.l, +t.w, +t.h, +t.theta, MAT.track);
+  if ($("follow").checked) {
+    const d = pose.pos.clone().sub(controls.target);
+    controls.target.add(d); camera.position.add(d);
+  }
+  $("hud").textContent = `${c.id.slice(0, 8)} · sweep ${i} · t ${fmt(s.t, 2)} s · ${n.toLocaleString()} pts · ${gt.length} annotated · ${tr.length} tracks`;
+  for (let j = 1; j <= 8 && i + j <= +$("frame").max; j++) loadSweep(c.id, c.sweeps[i + j].file);
+}
+
+let playing = false;
+async function play() {
+  while (playing && current) {
+    let i = +$("frame").value + 1;
+    if (i > +$("frame").max) i = +$("frame").min;
+    $("frame").value = i;
+    const t0 = performance.now();
+    await show(i);
+    await new Promise((r) => setTimeout(r, Math.max(0, 100 - (performance.now() - t0))));
+  }
+}
+$("play").onclick = () => { playing = !playing; $("play").textContent = playing ? "❚❚ pause" : "▶ play"; if (playing) play(); };
+$("frame").oninput = () => show(+$("frame").value);
+$("from").onchange = $("to").onchange = () => { applySlice(); show(+$("frame").value); };
+$("colour").onchange = () => show(+$("frame").value);
+
+await loadScores();
+const wanted = new URLSearchParams(location.search).get("log");
+if (wanted) selectLog(wanted);
+else if (logs.length) selectLog(logs[0].log_id);
+</script>
+</body>
+</html>
