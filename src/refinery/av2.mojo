@@ -13,7 +13,7 @@ the same solver the tracker associates with), and:
   doesn't annotate walls, trees or poles, which a geometric clusterer does
   find, so this is a floor on precision, not a measure of it.
 
-Both inputs are what `scripts/av2_fetch.py` and `run_geometry` write, in one
+Both inputs are what `refinery.av2_fetch` and `run_geometry` write, in one
 local map frame: `annotations.csv`, `tracks.csv` and `tf.csv` (for the ego's
 position at each sweep, which bounds a track's range the way `range_m` bounds
 an annotation's).

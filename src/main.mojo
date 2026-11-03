@@ -6,7 +6,7 @@
 and `sweeps/`. The output is the tracker CSV schema OfflinePoly reads, so the
 next stage is a pipe rather than an adapter.
 
-An Argoverse 2 log converted by `scripts/av2_fetch.py` runs with
+An Argoverse 2 log converted by `refinery.av2_fetch` runs with
 `--proprioception off --fit-terrain on`: a car has no joints to mask, and its
 drive leaves the site-sized terrain grid.
 

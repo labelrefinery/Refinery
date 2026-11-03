@@ -9,7 +9,7 @@ The partitions are the `log_id`s of the warehouse dataset `av2.logs`
 (`orca.keyed`), many per run. Per log:
 
 1. **fetch** downloads the log from the public bucket and converts it to a
-   work directory (`scripts/av2_fetch.py`); a log already converted is kept.
+   work directory (`refinery.av2_fetch`); a log already converted is kept.
 2. **label** runs Pipeline A on it (`run_geometry` with no proprioception and a
    terrain grid fitted to the drive) and appends its tracks to `av2.tracks_a`.
 3. **score** matches the tracks to the log's annotations (`refinery.av2`) and
@@ -21,8 +21,8 @@ snapshot a score came from.
 
 Environment: `ORCA_WAREHOUSE` (the Iceberg warehouse), `AV2_ROOT` (work
 directories, the download cache and fetch logs; default `runs/av2`),
-`AV2_PREFIX` (the split under `datasets/av2/`; default `sensor/val`, whose logs
-are annotated) and `AV2_PYTHON` (default `python`).
+and `AV2_PREFIX` (the split under `datasets/av2/`; default `sensor/val`, whose
+logs are annotated).
 """
 
 from std.os import getenv
@@ -38,8 +38,8 @@ from orca.keyed import Keyed
 from orca.tables import append, ensure_table
 
 from refinery.av2 import score_log
+from refinery.av2_fetch import fetch_log
 from refinery.io import read_csv_rows
-from refinery.proc import run_checked
 from refinery.stages import run_geometry
 
 comptime TRACKS = "av2.tracks_a"
@@ -115,21 +115,16 @@ def fetch(mut ctx: Ctx, log: Name) raises -> Fetched:
     """Downloads and converts one log, unless it's already converted."""
     var root = _env("AV2_ROOT", "runs/av2")
     var work = String(root, "/work/", log.text)
-    if not exists(work + "/meta.json"):
-        _ = run_checked(
-            [
-                _env("AV2_PYTHON", "python"),
-                String("scripts/av2_fetch.py"),
-                log.text,
-                work,
-                String("--prefix"),
-                _env("AV2_PREFIX", "sensor/val"),
-                String("--cache"),
-                String(root, "/cache"),
-            ],
-            String(root, "/logs/", log.text, ".fetch.log"),
+    if exists(work + "/meta.json"):
+        ctx.log(String(log, ": already converted in ", work))
+    else:
+        var meta = fetch_log(
+            log.text,
+            work,
+            prefix=_env("AV2_PREFIX", "sensor/val"),
+            cache=String(root, "/cache"),
         )
-    ctx.log(String("fetched ", log, " -> ", work))
+        ctx.log(String(log, ": ", meta, " -> ", work))
     return Fetched(log.copy(), work^)
 
 
