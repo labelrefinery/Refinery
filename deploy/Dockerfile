@@ -29,10 +29,11 @@ RUN pixi run -e orca sh -c 'mkdir -p /out/bin /out/pipelines \
     && mojo build -I ../LabelControl/src $DEP_INC ../LabelControl/src/server.mojo -o /out/bin/labelcontrol \
     && mojo build -I src $DEP_INC src/av2_pipeline_a.mojo -o /out/pipelines/av2-pipeline-a'
 # What the binaries link, and what they and their tins dlopen from
-# $CONDA_PREFIX/lib (libpq, flare's and objectstore's shims, the codecs,
-# sqlite), with what those link: only the pixi environment's libraries.
+# $CONDA_PREFIX/lib (libpq, flare's shims, the tins' lib*mojo.so shims:
+# objectstore, zstd, lz4, brotli; the codecs, sqlite), with what those link:
+# only the pixi environment's libraries.
 RUN env=/src/labelrefinery/Refinery/.pixi/envs/orca && mkdir -p /out/lib \
-    && loaded=$(ls $env/lib/libpq.so* $env/lib/libflare_*.so $env/lib/libobjectstoremojo.so \
+    && loaded=$(ls $env/lib/libpq.so* $env/lib/libflare_*.so $env/lib/lib*mojo.so \
         $env/lib/libzstd.so* $env/lib/liblz4.so* $env/lib/libbrotli*.so* $env/lib/libsnappy.so* \
         $env/lib/libdeflate.so* $env/lib/libz.so* $env/lib/libsqlite3.so* $env/lib/libcurl.so* 2>/dev/null || true) \
     && ldd /out/bin/* /out/pipelines/* $loaded | awk -v e="$env" '$3 ~ "^"e {print $3}' \
@@ -43,6 +44,10 @@ FROM debian:bookworm-slim
 # tzdata: orca's schedules read the system's TZif files.
 RUN apt-get update && apt-get install -y --no-install-recommends tzdata ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+# conda-forge's libcurl looks for its CA bundle where the build environment
+# had it; objectstore's shim sets no other, so the system's goes there.
+RUN mkdir -p /src/labelrefinery/Refinery/.pixi/envs/orca/ssl \
+    && ln -s /etc/ssl/certs/ca-certificates.crt /src/labelrefinery/Refinery/.pixi/envs/orca/ssl/cacert.pem
 COPY --from=build /out/lib /opt/orca/lib
 COPY --from=build /out/bin /opt/orca/bin
 COPY --from=build /out/pipelines /opt/orca/pipelines
