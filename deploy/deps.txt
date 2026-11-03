@@ -1,0 +1,24 @@
+# The sources the image compiles from, at the revisions they were built and
+# tested with: <owner/repo> <revision> <path under /src>. Refinery's orca
+# environment includes the magmalake ones by path (DEP_INC in pixi.toml).
+magmalake/orca.mojo 3a62f08fe65ca8ed0a3545939f4ecdf02df4a892 magmalake/orca.mojo
+magmalake/dista.mojo d6379e7b259b1c8e4ee007e7e6dff49060ef5926 magmalake/dista.mojo
+magmalake/k8s.mojo b7977c8f7c3b7ffa95815be981f673380e596100 magmalake/k8s.mojo
+magmalake/memory-region.mojo 40068c4f95ea659e9b78aa91ced45420b07e3e6e magmalake/memory-region.mojo
+magmalake/arrow-mlake.mojo e47f6e2541d74964c09443c156b36c30602e091b magmalake/arrow-mlake.mojo
+magmalake/parquet.mojo 210ece6d7744ae1a3abccb76d7ad161b9b0aa975 magmalake/parquet.mojo
+magmalake/iceberg.mojo d788c877b3d05f9be6a34946ec1f87a35a38170f magmalake/iceberg.mojo
+magmalake/threads.mojo c8c658dfa6fac00b7d5ab89a0277f248a7a79457 magmalake/threads.mojo
+magmalake/thrift.mojo 21cdbce67d22d72e88e88a60e2f168b05b4ef9fa magmalake/thrift.mojo
+magmalake/hashes.mojo 395aca597f9410bd0511df44d972f14b10a8b01d magmalake/hashes.mojo
+magmalake/snappy.mojo b8172ed0a4ef13911cc225d46e26676a5b8f1ccd magmalake/snappy.mojo
+magmalake/deflate.mojo aeb571e54ac736b97c826a23f44501715fddc656 magmalake/deflate.mojo
+magmalake/avro.mojo 479c9d390b5c12c2497e05f84b64bf690a8cfea3 magmalake/avro.mojo
+magmalake/roaring.mojo a90a7bd30cf1c21403a29059282072e93fbeeee2 magmalake/roaring.mojo
+magmalake/objectstore.mojo 58488efa729351f5894b45a0a92e898171c2e96d magmalake/objectstore.mojo
+magmalake/zstd.mojo 53655623ca8585fd5b36b1239842913ec308ae69 magmalake/zstd.mojo
+magmalake/lz4.mojo 64502eeeabed37515cd479bc421fc2920504cac5 magmalake/lz4.mojo
+magmalake/brotli.mojo aa6d14985baf82ad4b934f14136b95a291b55faf magmalake/brotli.mojo
+magmalake/sqlite.mojo 53b819cd395b1b0afe8772dfbb43489da6ce939e magmalake/sqlite.mojo
+magmalake/postgres.mojo bfe9b94ae97e3e184dc6d118b0684818927a5da8 magmalake/postgres.mojo
+labelrefinery/LabelControl 71a8980460bb5251c3f63634ebc4ce918ebd2412 labelrefinery/LabelControl
