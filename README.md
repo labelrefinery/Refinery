@@ -402,12 +402,68 @@ curl -O https://samples.magmalake.org/sitegen/v0.3.0/labels_rounds.mcap
 Scrub to t≈25 s: round 0 has objects standing on the stockpile, round 2 does
 not. That is the 617 → 177 false-positive drop, visible rather than tabulated.
 
+## Pipeline A on Argoverse 2, run by orca
+
+The same Pipeline A, on real lidar: [Argoverse 2](https://www.argoverse.org/av2.html)
+logs from the public bucket, run as an [orca](https://github.com/magmalake/orca.mojo)
+pipeline partitioned by log ID, with every result committed to Iceberg.
+
+```sh
+pixi run -e orca av2-logs           # av2.logs: the 10 logs in configs/av2_sample.txt
+pixi run -e orca av2-pipeline-a     # build/av2-pipeline-a
+pixi run -e orca ./build/av2-pipeline-a run --partitions @all
+pixi run -e orca ./build/av2-pipeline-a run --partitions 02678d04-cc9f-3148-9f95-1ba66347dff9
+```
+
+`src/av2_pipeline_a.mojo` is four steps. `fetch` downloads a log and lays it out
+as a work directory (`scripts/av2_fetch.py`; a converted log is kept). `label`
+runs `run_geometry` on it and appends the tracks to `av2.tracks_a`. `score`
+matches them to the log's annotations (`refinery.av2`) and appends a row to
+`av2.scores_a`. `summary` gathers the run's scores. The partitions are the
+`log_id` column of `av2.logs` (orca's keyed partitions), ten logs per run; add
+logs to the list and run `av2-logs` again to extend it.
+
+Two things change for a car, both opt-in so the sitegen scenes give the same
+labels as before: there are no joints, so the ego's own returns are dropped by
+a box in the converter rather than by forward kinematics
+(`proprioception=False`), and a log's drive covers a few hundred metres, so the
+terrain grid is fitted to the path rather than ±70 m around the origin
+(`fit_terrain_to_drive=True`).
+
+**The first numbers**, over the ten annotated `sensor/val` logs (1,568 sweeps),
+counting annotated objects within 50 m with at least 5 lidar returns, matched
+by bird's-eye-view centre within 2 m:
+
+| | |
+|---|---|
+| recall | 0.805 |
+| recall, classes that move | 0.817 |
+| precision floor | 0.131 |
+| centre error of matches | 0.61–0.90 m per log |
+| labeling | 259 ms per sweep, one core |
+| the run, downloads included | 9 min 10 s |
+
+Recall from geometry alone, with nothing learned, is the number that matters
+here: four in five annotated objects are found and tracked. The precision is a
+floor, not a measure: AV2 doesn't annotate walls, poles, trees or vegetation,
+which a geometric clusterer finds, so most unmatched tracks are real structure
+rather than noise. Classing them is Pipeline B's job.
+
+The environment builds against sibling checkouts of the magmalake repos
+(`../../magmalake/*`, each at main), as orca's own `data` environment does,
+and needs nothing else. AV2's Feather files are LZ4-compressed Arrow IPC,
+which arrow-mlake doesn't read yet, so the converter is Python (pyarrow); the
+rest is Mojo. AV2 is licensed CC BY-NC-SA 4.0.
+
 ## Layout
 
 - `src/refinery/io.mojo` — sweeps, poses, joints; the sweep reader lifts points
   into the map frame in the same pass that decodes them
 - `src/refinery/pipeline.mojo` — self-mask, detection, association, smoothing
 - `src/main.mojo` — CLI
+- `src/refinery/av2.mojo` — scoring tracks against AV2 annotations
+- `src/av2_pipeline_a.mojo`, `src/av2_logs.mojo` — the orca pipeline and its keys dataset
+- `scripts/av2_fetch.py` — an AV2 log to a work directory
 
 ## License
 

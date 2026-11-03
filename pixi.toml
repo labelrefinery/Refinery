@@ -47,10 +47,52 @@ test-publish = { cmd = "mojo run -I src test/test_publish.mojo", description = "
 test-datasets = { cmd = "mojo run -I src test/test_datasets.mojo", description = "Dataset registry tests" }
 test-trainconfig = { cmd = "mojo run -I src test/test_trainconfig.mojo", description = "Training config generation tests" }
 test-stages = { cmd = "mojo run -I src test/test_stages.mojo", description = "Pipeline stage edge cases" }
-test = { depends-on = ["test-proc", "test-opsdb", "test-runctx", "test-filter", "test-router", "test-review", "test-publish", "test-datasets", "test-trainconfig", "test-stages"], description = "All Mojo tests" }
+test-av2 = { cmd = "mojo run -I src test/test_av2.mojo", description = "AV2 scoring and the drive-sized terrain grid" }
+test = { depends-on = ["test-proc", "test-opsdb", "test-runctx", "test-filter", "test-router", "test-review", "test-publish", "test-datasets", "test-trainconfig", "test-stages", "test-av2"], description = "All Mojo tests" }
 build-executor = { cmd = "mojo build -I src src/executor.mojo -o build/executor", description = "Build the Restate executor service" }
 # Must run under `pixi run`: restate.mojo resolves librestatemojo from
 # $CONDA_PREFIX/lib, and falls back to a dev-relative path when it is unset.
 executor = { cmd = "./build/executor", depends-on = ["build-executor"], description = "Serve the Restate executor on :9080" }
 build-orchestrator = { cmd = "mojo build -I src src/orchestrator.mojo -o build/orchestrator", description = "Build the durable loop" }
 orchestrator = { cmd = "./build/orchestrator", depends-on = ["build-orchestrator"], description = "Serve the durable loop on :9081" }
+
+# The orca environment: Pipeline A over Argoverse 2 as an orca pipeline
+# (src/av2_pipeline_a.mojo). orca isn't a package; like its own `data`
+# environment, it builds against sibling checkouts of the magmalake repos
+# (../../magmalake/*), each at main. It leaves out the default feature, whose
+# packaged iceberg-mojo would be a second copy of the iceberg it builds from
+# source. The pins below are orca's `data` environment's.
+[feature.orca.dependencies]
+mojo-compiler = "==1.2.0"
+hungarian-mojo = { git = "https://github.com/labelrefinery/Hungarian.mojo.git", rev = "ff7e457fd4bb59b14fea02b19d39d009d20ceb98" }
+kalman-mojo = { git = "https://github.com/labelrefinery/Kalman.mojo.git", rev = "a2f64ab912225c2aabe744ba5e43bec071f85747" }
+stone-mojo = { git = "https://github.com/labelrefinery/Stone.mojo.git", rev = "54ee1f7ed7edfa6236b06ad39ea0fc16680abec7" }
+objectstore-mojo = { git = "https://github.com/magmalake/objectstore.mojo", rev = "748e2d31450a7793592e439d6c69d8c6598d2129" }
+zstd-mojo = { git = "https://github.com/magmalake/zstd.mojo", rev = "53655623ca8585fd5b36b1239842913ec308ae69" }
+lz4-mojo = { git = "https://github.com/magmalake/lz4.mojo", rev = "64502eeeabed37515cd479bc421fc2920504cac5" }
+brotli-mojo = { git = "https://github.com/magmalake/brotli.mojo", rev = "aa6d14985baf82ad4b934f14136b95a291b55faf" }
+sqlite-mojo = { git = "https://github.com/magmalake/sqlite.mojo", rev = "53b819cd395b1b0afe8772dfbb43489da6ce939e" }
+postgres-mojo = { git = "https://github.com/magmalake/postgres.mojo", rev = "bfe9b94ae97e3e184dc6d118b0684818927a5da8" }
+flare_mlake = { git = "https://github.com/magmalake/flare_mlake", rev = "0cb5005489bb1af57ca0421b8f0fcd206bbacf42" }
+json_mlake = { git = "https://github.com/magmalake/json_mlake", rev = "d850b1c90487e1e9a88ac87d1c1d7f53ffba7276" }
+libcurl = ">=8,<9"
+libsqlite = ">=3.45,<4"
+libpq = ">=16,<19"
+postgresql = ">=16,<19"
+# scripts/av2_fetch.py: AV2's Feather files are LZ4-compressed Arrow IPC.
+python = ">=3.12,<3.15"
+pyarrow = ">=17"
+numpy = ">=2"
+
+[feature.orca.activation.env]
+DEP_INC = "-I ../../magmalake/orca.mojo/src -I ../../magmalake/dista.mojo/src -I ../../magmalake/memory-region.mojo/src -I ../../magmalake/arrow-mlake.mojo/src -I ../../magmalake/parquet.mojo/src -I ../../magmalake/parquet.mojo/full/src -I ../../magmalake/threads.mojo/src -I ../../magmalake/threads.mojo/compat -I ../../magmalake/thrift.mojo/src -I ../../magmalake/hashes.mojo/src -I ../../magmalake/snappy.mojo/src -I ../../magmalake/deflate.mojo/src -I ../../magmalake/avro.mojo/src -I ../../magmalake/roaring.mojo/src -I ../../magmalake/objectstore.mojo/src -I ../../magmalake/zstd.mojo/src -I ../../magmalake/lz4.mojo/src -I ../../magmalake/brotli.mojo/src -I ../../magmalake/sqlite.mojo -I ../../magmalake/postgres.mojo/src -I ../../magmalake/iceberg.mojo/src"
+ORCA_WAREHOUSE = "runs/av2/warehouse"
+AV2_ROOT = "runs/av2"
+
+[feature.orca.tasks]
+build-av2-logs = { cmd = "mkdir -p build && mojo build -I src $DEP_INC src/av2_logs.mojo -o build/av2-logs", description = "Build the av2.logs writer" }
+av2-logs = { cmd = "./build/av2-logs $ORCA_WAREHOUSE configs/av2_sample.txt", depends-on = ["build-av2-logs"], description = "Write av2.logs from configs/av2_sample.txt" }
+av2-pipeline-a = { cmd = "mkdir -p build && mojo build -I src $DEP_INC src/av2_pipeline_a.mojo -o build/av2-pipeline-a", description = "Build Pipeline A over AV2 as an orca pipeline" }
+
+[environments]
+orca = { features = ["orca"], no-default-feature = true }
