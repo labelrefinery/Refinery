@@ -67,6 +67,19 @@ the scene for a labelling run without `--camera-hz`: the LiDAR and every
 ground-truth topic are byte-identical either way, verified by checksum, so the
 labels are the same labels. The numbers below were produced that way.
 
+**On dista.** Detection is 97% of the stage (an Argoverse 2 log: 36.6 s of
+37.6 s), and it is per sweep, so `geometry-tasks` runs it as a dista task per
+sweep, with the terrain as one task, and writes the same bytes as `refinery`:
+
+```sh
+pixi run -e orca build-geometry-tasks
+./build/geometry-tasks work work/pipeline_a.csv --workers 8
+pixi run -e orca test-geometry-tasks work runs/av2/work/<log>:--proprioception,off,--fit-terrain,on
+```
+
+On one log: 36.6 s of detection in one process, 19.2 s on 2 workers, 10.6 s
+on 4, 6.6 s on 8 (an M-series laptop, 4 performance cores).
+
 Dependencies come from the registry, one command:
 
 ```sh

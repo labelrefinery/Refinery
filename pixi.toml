@@ -15,7 +15,7 @@ platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
 mojo = "==1.2.0"
 hungarian-mojo = { git = "https://github.com/labelrefinery/Hungarian.mojo.git", rev = "ff7e457fd4bb59b14fea02b19d39d009d20ceb98" }
 kalman-mojo = { git = "https://github.com/labelrefinery/Kalman.mojo.git", rev = "a2f64ab912225c2aabe744ba5e43bec071f85747" }
-stone-mojo = { git = "https://github.com/labelrefinery/Stone.mojo.git", rev = "54ee1f7ed7edfa6236b06ad39ea0fc16680abec7" }
+stone-mojo = { git = "https://github.com/labelrefinery/Stone.mojo.git", rev = "d1b5f827f5ef131e285b6f8d51bb9aef2597a7ff" }
 # Operational state -- pipeline invocations, router decisions, the review queue.
 # Labels stay in Iceberg; this is the control plane, which wants point lookups
 # and small frequent writes rather than table commits.
@@ -69,7 +69,7 @@ orchestrator = { cmd = "./build/orchestrator", depends-on = ["build-orchestrator
 mojo-compiler = "==1.2.0"
 hungarian-mojo = { git = "https://github.com/labelrefinery/Hungarian.mojo.git", rev = "ff7e457fd4bb59b14fea02b19d39d009d20ceb98" }
 kalman-mojo = { git = "https://github.com/labelrefinery/Kalman.mojo.git", rev = "a2f64ab912225c2aabe744ba5e43bec071f85747" }
-stone-mojo = { git = "https://github.com/labelrefinery/Stone.mojo.git", rev = "54ee1f7ed7edfa6236b06ad39ea0fc16680abec7" }
+stone-mojo = { git = "https://github.com/labelrefinery/Stone.mojo.git", rev = "d1b5f827f5ef131e285b6f8d51bb9aef2597a7ff" }
 objectstore-mojo = { git = "https://github.com/magmalake/objectstore.mojo", rev = "748e2d31450a7793592e439d6c69d8c6598d2129" }
 zstd-mojo = { git = "https://github.com/magmalake/zstd.mojo", rev = "53655623ca8585fd5b36b1239842913ec308ae69" }
 lz4-mojo = { git = "https://github.com/magmalake/lz4.mojo", rev = "64502eeeabed37515cd479bc421fc2920504cac5" }
@@ -92,6 +92,9 @@ AV2_ROOT = "runs/av2"
 build-av2-logs = { cmd = "mkdir -p build && mojo build -I src $DEP_INC src/av2_logs.mojo -o build/av2-logs", description = "Build the av2.logs writer" }
 av2-logs = { cmd = "./build/av2-logs $ORCA_WAREHOUSE configs/av2_sample.txt", depends-on = ["build-av2-logs"], description = "Write av2.logs from configs/av2_sample.txt" }
 test-lake = { cmd = "mojo run -I src $DEP_INC test/test_lake.mojo", description = "Labels and evaluations written from an orca step" }
+build-refinery = { cmd = "mkdir -p build && mojo build -I src $DEP_INC src/main.mojo -o build/refinery", description = "Build the sequential Pipeline A CLI" }
+build-geometry-tasks = { cmd = "mkdir -p build && mojo build -I src $DEP_INC src/geometry_tasks.mojo -o build/geometry-tasks", description = "Build Pipeline A's geometry on dista" }
+test-geometry-tasks = { cmd = "test/geometry_tasks.sh", depends-on = ["build-refinery", "build-geometry-tasks"], description = "The geometry stage on dista writes what the sequential one writes (pass work directories)" }
 test-av2-view = { cmd = "mojo run -I src $DEP_INC test/test_av2_view.mojo", description = "The AV2 view bundle and the viewer's path checks" }
 build-orca = { cmd = "mkdir -p build && mojo build $DEP_INC ../../magmalake/orca.mojo/bin/scheduler.mojo -o build/orca", description = "Build orca's scheduler and UI binary from the sibling checkout" }
 build-labelcontrol = { cmd = "mkdir -p build && mojo build -I ../LabelControl/src $DEP_INC ../LabelControl/src/server.mojo -o build/labelcontrol", description = "Build LabelControl's site from the sibling checkout" }

@@ -48,7 +48,7 @@ slope and reasons about connectivity instead.
 
 from std.math import ceil, floor
 
-from stone import GridSpec, TerrainGrid, Vec3
+from stone import CellPatch, GridSpec, TerrainGrid, Vec3
 
 from .io import Pose
 
@@ -100,7 +100,7 @@ unlike the path itself it was actually seen.
 """
 
 
-struct TerrainModel(Movable):
+struct TerrainModel(Copyable, Movable):
     """The grown ground surface, and what it says about any given point."""
 
     var spec: GridSpec
@@ -140,21 +140,10 @@ struct TerrainModel(Movable):
         return z <= self.floor_z[idx] + GROUND_CLEARANCE_M
 
 
-def build_terrain(
-    sweeps_x: List[List[Float64]],
-    sweeps_y: List[List[Float64]],
-    sweeps_z: List[List[Float64]],
-    poses: List[Pose],
-    fit_to_drive: Bool = False,
-) raises -> TerrainModel:
-    """Accumulate every sweep, then grow the ground surface from the drive.
+def terrain_spec(poses: List[Pose], fit_to_drive: Bool = False) -> GridSpec:
+    """The grid the terrain is decided on.
 
-    Aggregating the whole sequence before deciding anything is the offboard
-    advantage in its purest form: every pass over the same ground adds a
-    viewpoint, so a cell seen edge-on early is seen properly later, and nothing
-    has to be decided in real time.
-
-    The grid is `GRID_EXTENT_M` either side of the map origin, which covers a
+    It is `GRID_EXTENT_M` either side of the map origin, which covers a
     machine working a site. With `fit_to_drive` it covers the whole path
     instead, `GRID_EXTENT_M` beyond its furthest pose on every side, on the
     same one-metre lattice: a car crosses a few hundred metres in a log.
@@ -177,30 +166,55 @@ def build_terrain(
         var nx = Int(ceil((hi_x + GRID_EXTENT_M - ox) / GRID_CELL_M))
         var ny = Int(ceil((hi_y + GRID_EXTENT_M - oy) / GRID_CELL_M))
         spec = GridSpec(ox, oy, GRID_CELL_M, nx, ny)
-    var grid = TerrainGrid(spec)
-    var count = spec.cell_count()
+    return spec
 
+
+def build_terrain(
+    sweeps_x: List[List[Float64]],
+    sweeps_y: List[List[Float64]],
+    sweeps_z: List[List[Float64]],
+    poses: List[Pose],
+    fit_to_drive: Bool = False,
+) raises -> TerrainModel:
+    """Accumulate every sweep, then grow the ground surface from the drive.
+
+    Aggregating the whole sequence before deciding anything is the offboard
+    advantage in its purest form: every pass over the same ground adds a
+    viewpoint, so a cell seen edge-on early is seen properly later, and nothing
+    has to be decided in real time.
+
+    Each sweep is binned as a patch and merged in order, as
+    `refinery.geometry` does with sweeps binned in separate tasks, so the two
+    agree exactly.
+    """
+    var spec = terrain_spec(poses, fit_to_drive)
+    var grid = TerrainGrid(spec)
+    for f in range(len(sweeps_x)):
+        var points = List[Vec3](capacity=len(sweeps_x[f]))
+        for i in range(len(sweeps_x[f])):
+            points.append(Vec3(sweeps_x[f][i], sweeps_y[f][i], sweeps_z[f][i]))
+        grid.merge(CellPatch.of(spec, points))
+    grid.finalize()
+    return grow_terrain(grid, poses)
+
+
+def grow_terrain(grid: TerrainGrid, poses: List[Pose]) raises -> TerrainModel:
+    """Grow the ground surface over a finalized grid, from the drive.
+
+    A cell's floor is its lowest return and it is observed if it has any;
+    both come from the grid's accumulators, as `step` comes from its cells.
+    """
+    var spec = grid.spec
+    var count = spec.cell_count()
     var floor_z = List[Float64](length=count, fill=1.0e18)
     var observed = List[Bool](length=count, fill=False)
     var observed_cells = 0
-
-    for f in range(len(sweeps_x)):
-        var points = List[Vec3]()
-        for i in range(len(sweeps_x[f])):
-            var px = sweeps_x[f][i]
-            var py = sweeps_y[f][i]
-            var pz = sweeps_z[f][i]
-            points.append(Vec3(px, py, pz))
-            var idx = spec.index_of(px, py)
-            if idx < 0:
-                continue
-            if not observed[idx]:
-                observed[idx] = True
-                observed_cells += 1
-            if pz < floor_z[idx]:
-                floor_z[idx] = pz
-        grid.ingest(points)
-    grid.finalize()
+    for idx in range(count):
+        ref acc = grid.accumulators[idx]
+        if acc.count > 0:
+            observed[idx] = True
+            observed_cells += 1
+            floor_z[idx] = acc.z_min
 
     # -- seed: the observed neighbourhood of the machine's own path ---------
     var reached = List[Bool](length=count, fill=False)
