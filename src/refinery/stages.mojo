@@ -27,7 +27,12 @@ from refinery.pipeline import (
     smooth,
     MIN_TRACK_FRAMES,
 )
-from refinery.terrain import TerrainModel, build_terrain
+from std.time import perf_counter_ns
+
+from stone import CellPatch
+
+from refinery.geometry import detect_sweep, lift, merge_terrain, sweep_jobs
+from refinery.terrain import TerrainModel
 
 
 @fieldwise_init
@@ -162,6 +167,56 @@ def run_tracking(
     print("tracks:", len(tracks), "kept:", kept, "->", out_path)
 
 
+def report_lift(metrics: StageMetrics, terrain: TerrainModel):
+    """The log lines after lifting every sweep and growing the terrain."""
+    print(
+        "points:",
+        metrics.total_points,
+        "| ego self-returns removed:",
+        metrics.ego_points,
+        "(",
+        100.0 * Float64(metrics.ego_points) / Float64(max(metrics.total_points, 1)),
+        "% )",
+    )
+    print(
+        "terrain: observed cells",
+        terrain.observed_cells,
+        "| seeds",
+        terrain.seed_cells,
+        "-> ground surface",
+        terrain.terrain_cells,
+        "cells | blocked as too thick",
+        terrain.blocked_by_step,
+    )
+
+
+def report_detections(
+    mut metrics: StageMetrics, per_frame: List[List[Detection]]
+):
+    """Counts the detections into `metrics` and logs them."""
+    var total = 0
+    for f in range(len(per_frame)):
+        total += len(per_frame[f])
+        if f % 200 == 0:
+            print("  frame", f, "detections", len(per_frame[f]))
+    metrics.raw_detections = total
+    print("raw detections:", total)
+
+
+def report_seconds(t0: Int, t1: Int, t2: Int, t3: Int, t4: Int):
+    """Where the geometry stage's time went, phase by phase."""
+    print(
+        "seconds: lift",
+        Float64(t1 - t0) / 1e9,
+        "| terrain",
+        Float64(t2 - t1) / 1e9,
+        "| detect",
+        Float64(t3 - t2) / 1e9,
+        "| track",
+        Float64(t4 - t3) / 1e9,
+    )
+
+
 def run_geometry(
     work: String,
     out_path: String,
@@ -178,102 +233,43 @@ def run_geometry(
     self-mask: the work directory's sweeps arrive with the ego's own returns
     already removed, as a car's are (`refinery.av2_fetch`).
     `fit_terrain_to_drive` sizes the terrain grid to the path rather than the
-    site (`build_terrain`).
+    site (`refinery.terrain.terrain_spec`).
     """
     var metrics = StageMetrics.empty()
-    var per_frame = List[List[Detection]]()
-    var frame_times = List[Float64]()
-
-    var poses = read_poses(work + "/tf.csv")
-    var joints = List[Joints]()
-    if proprioception:
-        joints = read_joints(work + "/joints.csv")
-    var index = read_csv_rows(work + "/sweeps/index.csv")
-    metrics.frames = len(index)
+    var geo = sweep_jobs(
+        work, proprioception, fit_terrain_to_drive, use_terrain
+    )
+    metrics.frames = len(geo.jobs)
     print(
         "frames:",
-        len(index),
+        len(geo.jobs),
         "| terrain stage:",
         "on" if use_terrain else "off",
     )
 
-    # Pass one: lift every sweep into the map frame and hold it. The whole
-    # sequence has to be in hand before terrain can be decided, which is the
-    # offboard advantage restated as a data dependency.
-    var xs = List[List[Float64]]()
-    var ys = List[List[Float64]]()
-    var zs = List[List[Float64]]()
-    var total_points = 0
-    var ego_points = 0
-    for f in range(len(index)):
-        ref row = index[f]
-        var t = Float64(row[1])
-        frame_times.append(t)
-        var sweep = read_sweep(work + "/sweeps", String(row[3]), t, poses[f])
-        total_points += len(sweep)
-        # Self-mask here, before anything downstream sees the cloud. The
-        # terrain calibration needs it as much as the clusterer does: the
-        # driven cells are exactly where the machine is standing, so leaving
-        # its own returns in makes "known ground" contain a 3 m machine.
-        var fx = List[Float64]()
-        var fy = List[Float64]()
-        var fz = List[Float64]()
-        if proprioception:
-            var mask = ego_mask(poses[f], joints[f])
-            for i in range(len(sweep)):
-                if mask.masks(sweep.x[i], sweep.y[i], sweep.z[i]):
-                    continue
-                fx.append(sweep.x[i])
-                fy.append(sweep.y[i])
-                fz.append(sweep.z[i])
-        else:
-            fx = sweep.x.copy()
-            fy = sweep.y.copy()
-            fz = sweep.z.copy()
-        ego_points += len(sweep) - len(fx)
-        xs.append(fx^)
-        ys.append(fy^)
-        zs.append(fz^)
-    metrics.total_points = total_points
-    metrics.ego_points = ego_points
-    print(
-        "points:",
-        total_points,
-        "| ego self-returns removed:",
-        ego_points,
-        "(",
-        100.0 * Float64(ego_points) / Float64(total_points),
-        "% )",
-    )
+    # Phase one: every sweep's patch of the terrain grid. The whole sequence
+    # has to be in hand before terrain can be decided, which is the offboard
+    # advantage restated as a data dependency.
+    var t0 = perf_counter_ns()
+    var patches = List[CellPatch](capacity=len(geo.jobs))
+    for f in range(len(geo.jobs)):
+        var lifted = lift(geo.jobs[f])
+        metrics.total_points += lifted.total_points
+        metrics.ego_points += lifted.ego_points
+        patches.append(lifted^.into_patch())
+    var t1 = perf_counter_ns()
+    var terrain = merge_terrain(geo.spec, patches, geo.poses)
+    var t2 = perf_counter_ns()
+    report_lift(metrics, terrain)
 
-    var terrain = build_terrain(xs, ys, zs, poses, fit_terrain_to_drive)
-    print(
-        "terrain: observed cells",
-        terrain.observed_cells,
-        "| seeds",
-        terrain.seed_cells,
-        "-> ground surface",
-        terrain.terrain_cells,
-        "cells | blocked as too thick",
-        terrain.blocked_by_step,
-    )
+    # Phase two: detect, now that terrain is known.
+    var per_frame = List[List[Detection]](capacity=len(geo.jobs))
+    for f in range(len(geo.jobs)):
+        per_frame.append(detect_sweep(geo.jobs[f], terrain))
+    var t3 = perf_counter_ns()
+    report_detections(metrics, per_frame)
 
-    # Pass two: detect, now that terrain is known.
-    var total_dets = 0
-    for f in range(len(index)):
-        var sweep = Sweep(frame_times[f])
-        sweep.x = xs[f].copy()
-        sweep.y = ys[f].copy()
-        sweep.z = zs[f].copy()
-        var dets = detect(sweep, terrain, use_terrain)
-        total_dets += len(dets)
-        per_frame.append(dets^)
-        if f % 200 == 0:
-            print("  frame", f, "detections", len(per_frame[f]))
-
-    metrics.raw_detections = total_dets
-    print("raw detections:", total_dets)
-
+    var frame_times = geo.times.copy()
     run_tracking(
         per_frame^,
         frame_times^,
@@ -283,6 +279,7 @@ def run_geometry(
         reverse,
         metrics,
     )
+    report_seconds(t0, t1, t2, t3, perf_counter_ns())
     return metrics^
 
 
