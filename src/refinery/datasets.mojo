@@ -1,37 +1,43 @@
-"""Named, versioned, immutable datasets with recorded lineage.
-
-The Mojo port of `workflows/datasets.py`, which was written before the pipeline
-moved to Mojo and used PyIceberg for what `iceberg.mojo` now does natively --
-including the REST catalog's `X-Iceberg-Access-Delegation: vended-credentials`
-handshake, which is exactly what R2 Data Catalog needs. It was also never
-exercised against a live catalog.
+"""The dataset schemas, one Iceberg table per kind, and the evaluation rows.
 
 This file is the **single definition of the dataset schemas**. `publish.mojo`
-reads them from here, so the shape a pipeline writes cannot drift from the
-shape the registry claims was written.
+and the orca pipelines read them from here, so the shape one writer produces
+can't drift from another's.
 
-A dataset is `(name, version)`. Resolving it is a registry lookup followed by a
-snapshot-pinned read, so a version returns the same rows forever -- after
-compaction, after schema evolution, after later appends to the same table. A
-timestamp would survive none of those.
+A dataset is a name within a kind's table: the `dataset_name` column, which the
+orca writers (`refinery.lake`) partition by. A version of it is the snapshot
+that committed it, so reading at that snapshot returns the same rows forever --
+after compaction, schema evolution and later appends to the same table, none of
+which a timestamp would survive.
 
-**Two deliberate deviations from the Python schema**, both about nested types.
-`parents` is a comma-separated string rather than `list<string>`, and `params`
-is a JSON string rather than `map<string,string>`. Building nested Arrow by
-hand costs more than it buys for a table whose rows are read one at a time by
-`lookup`, and there is no existing data to stay compatible with. If the
-registry ever needs to be queried *by* parent, `iceberg.batch.NestedBuilder`
-is the way back.
+**There is no registry table.** Who made a snapshot, from which code and which
+input snapshots is what orca records for every commit an orca step makes: the
+snapshot summary carries `orca.run`, `orca.step`, `orca.code` and `orca.reads`,
+and `orca lineage <table> <snapshot>` walks it both ways. Keeping a second copy
+of that here would only let the two disagree. Where a row has to name another
+dataset version, as an evaluation names the predictions and ground truth it
+scored, it names it as `<table>@<snapshot>` (`version_ref`).
 """
 
 from iceberg.batch import ColumnBuilder, Datum, batch_of
 from iceberg.catalog.filesystem import FilesystemCatalog, Table
 from iceberg.schema import Schema
 from iceberg.types import P_DOUBLE, P_INT, P_LONG, P_STRING
+from parquet import RecordBatch
 
 
 comptime NAMESPACE = "labelrefinery"
-comptime REGISTRY_TABLE = "datasets"
+
+
+def dataset(kind: String) raises -> String:
+    """The warehouse dataset a kind lives in, as orca names it:
+    `labelrefinery.labels` for `labels`."""
+    return String(NAMESPACE, ".", kind_table(kind))
+
+
+def version_ref(dataset: String, snapshot: Int64) -> String:
+    """One version of a dataset, as a row names it: `<dataset>@<snapshot>`."""
+    return String(dataset, "@", snapshot)
 
 
 def kind_table(kind: String) raises -> String:
@@ -57,22 +63,6 @@ def kind_table(kind: String) raises -> String:
         return String("evaluations")
     raise Error("unknown dataset kind: " + kind)
 
-
-comptime REGISTRY_SCHEMA_JSON = """
-{"type":"struct","schema-id":0,"fields":[
-{"id":1,"name":"name","required":true,"type":"string"},
-{"id":2,"name":"version","required":true,"type":"string"},
-{"id":3,"name":"kind","required":true,"type":"string"},
-{"id":4,"name":"table","required":true,"type":"string"},
-{"id":5,"name":"snapshot_id","required":true,"type":"long"},
-{"id":6,"name":"parents","required":false,"type":"string"},
-{"id":7,"name":"produced_by","required":false,"type":"string"},
-{"id":8,"name":"producer_version","required":false,"type":"string"},
-{"id":9,"name":"params","required":false,"type":"string"},
-{"id":10,"name":"row_count","required":false,"type":"long"},
-{"id":11,"name":"created_at","required":true,"type":"string"}
-]}
-"""
 
 comptime LABELS_SCHEMA_JSON = """
 {"type":"struct","schema-id":0,"fields":[
@@ -144,8 +134,7 @@ struct EvalRow(Copyable, Movable):
     var value: Float64
 
 
-def write_evaluation(
-    mut catalog: FilesystemCatalog,
+def evaluation_batch(
     dataset_name: String,
     rows: List[EvalRow],
     predictions: String,
@@ -153,17 +142,10 @@ def write_evaluation(
     produced_by: String,
     run_id: String,
     created_at: String = "",
-) raises -> Int:
-    """Append evaluation rows and return the snapshot they landed in."""
-    var target = kind_table("evaluation")
-    var schema = Schema.parse(EVALUATION_SCHEMA_JSON)
-
-    var table: Table
-    if catalog.table_exists(NAMESPACE, target):
-        table = catalog.load_table(NAMESPACE, target)
-    else:
-        table = catalog.create_table(NAMESPACE, target, schema)
-
+) raises -> RecordBatch:
+    """Evaluation rows as one batch of `EVALUATION_SCHEMA_JSON`.
+    `predictions` and `ground_truth` name the versions scored
+    (`version_ref`), or are empty when there are none."""
     var b_name = ColumnBuilder(String("dataset_name"), 1, P_STRING)
     var b_run = ColumnBuilder(String("run_id"), 2, P_STRING)
     var b_pred = ColumnBuilder(String("predictions"), 3, P_STRING)
@@ -186,13 +168,46 @@ def write_evaluation(
         b_by.add(Datum.string_(produced_by))
         b_at.add(Datum.string_(created_at))
 
+    return batch_of(
+        [
+            b_name^, b_run^, b_pred^, b_gt^, b_slice^, b_metric^, b_value^,
+            b_by^, b_at^,
+        ]
+    )
+
+
+def write_evaluation(
+    mut catalog: FilesystemCatalog,
+    dataset_name: String,
+    rows: List[EvalRow],
+    predictions: String,
+    ground_truth: String,
+    produced_by: String,
+    run_id: String,
+    created_at: String = "",
+) raises -> Int:
+    """Append evaluation rows outside orca and return the snapshot they landed
+    in. The Restate loop's writer, until it moves to orca; an orca step uses
+    `refinery.lake.write_evaluation`, which records lineage."""
+    var target = kind_table("evaluation")
+    var table: Table
+    if catalog.table_exists(NAMESPACE, target):
+        table = catalog.load_table(NAMESPACE, target)
+    else:
+        table = catalog.create_table(
+            NAMESPACE, target, Schema.parse(EVALUATION_SCHEMA_JSON)
+        )
+
     var tx = table.new_append()
     tx.add(
-        batch_of(
-            [
-                b_name^, b_run^, b_pred^, b_gt^, b_slice^, b_metric^,
-                b_value^, b_by^, b_at^,
-            ]
+        evaluation_batch(
+            dataset_name,
+            rows,
+            predictions,
+            ground_truth,
+            produced_by,
+            run_id,
+            created_at,
         )
     )
     _ = tx.commit()
@@ -201,117 +216,3 @@ def write_evaluation(
     var snapshot = Int(committed.metadata.current_snapshot_id)
     print("evaluation:", len(rows), "rows ->", target, "snapshot", snapshot)
     return snapshot
-
-
-@fieldwise_init
-struct Dataset(Copyable, Movable):
-    """One registered version."""
-
-    var name: String
-    var version: String
-    var kind: String
-    var table: String
-    var snapshot_id: Int
-    var parents: List[String]
-    var produced_by: String
-    var producer_version: String
-    var params: String
-    var row_count: Int
-
-    def ref(self) -> String:
-        return self.name + "@" + self.version
-
-
-def join_parents(parents: List[String]) -> String:
-    var out = String("")
-    for i in range(len(parents)):
-        if i > 0:
-            out += ","
-        out += parents[i]
-    return out^
-
-
-def split_parents(raw: String) -> List[String]:
-    var out = List[String]()
-    if raw.byte_length() == 0:
-        return out^
-    for part in raw.split(","):
-        var one = String(String(part).strip())
-        if one.byte_length() > 0:
-            out.append(one^)
-    return out^
-
-
-def _open_registry(mut catalog: FilesystemCatalog) raises -> Table:
-    if catalog.table_exists(NAMESPACE, REGISTRY_TABLE):
-        return catalog.load_table(NAMESPACE, REGISTRY_TABLE)
-    return catalog.create_table(
-        NAMESPACE, REGISTRY_TABLE, Schema.parse(REGISTRY_SCHEMA_JSON)
-    )
-
-
-def register(
-    mut catalog: FilesystemCatalog,
-    name: String,
-    version: String,
-    kind: String,
-    snapshot_id: Int,
-    row_count: Int,
-    parents: List[String],
-    produced_by: String = "",
-    producer_version: String = "",
-    params: String = "{}",
-    created_at: String = "",
-) raises -> Dataset:
-    """Record a version. Never updates a row -- versions are immutable."""
-    var table = _open_registry(catalog)
-
-    var b_name = ColumnBuilder(String("name"), 1, P_STRING)
-    var b_version = ColumnBuilder(String("version"), 2, P_STRING)
-    var b_kind = ColumnBuilder(String("kind"), 3, P_STRING)
-    var b_table = ColumnBuilder(String("table"), 4, P_STRING)
-    var b_snap = ColumnBuilder(String("snapshot_id"), 5, P_LONG)
-    var b_parents = ColumnBuilder(String("parents"), 6, P_STRING)
-    var b_by = ColumnBuilder(String("produced_by"), 7, P_STRING)
-    var b_pver = ColumnBuilder(String("producer_version"), 8, P_STRING)
-    var b_params = ColumnBuilder(String("params"), 9, P_STRING)
-    var b_rows = ColumnBuilder(String("row_count"), 10, P_LONG)
-    var b_at = ColumnBuilder(String("created_at"), 11, P_STRING)
-
-    var target = kind_table(kind)
-    b_name.add(Datum.string_(name))
-    b_version.add(Datum.string_(version))
-    b_kind.add(Datum.string_(kind))
-    b_table.add(Datum.string_(target))
-    b_snap.add(Datum.long_(Int64(snapshot_id)))
-    b_parents.add(Datum.string_(join_parents(parents)))
-    b_by.add(Datum.string_(produced_by))
-    b_pver.add(Datum.string_(producer_version))
-    b_params.add(Datum.string_(params))
-    b_rows.add(Datum.long_(Int64(row_count)))
-    b_at.add(Datum.string_(created_at))
-
-    var tx = table.new_append()
-    tx.add(
-        batch_of(
-            [
-                b_name^, b_version^, b_kind^, b_table^, b_snap^, b_parents^,
-                b_by^, b_pver^, b_params^, b_rows^, b_at^,
-            ]
-        )
-    )
-    _ = tx.commit()
-
-    print("registered", name + "@" + version, "->", target, "@", snapshot_id)
-    return Dataset(
-        name,
-        version,
-        kind,
-        target,
-        snapshot_id,
-        parents.copy(),
-        produced_by,
-        producer_version,
-        params,
-        row_count,
-    )
