@@ -30,7 +30,15 @@ Parameters:
   RunInstanceType:
     Type: String
     Default: c7g.large
-    Description: What each run of av2_pipeline_a runs on (Graviton; the image is arm64)
+    Description: Each run's head, which runs av2_pipeline_a's steps (Graviton; the image is arm64)
+  WorkerInstanceType:
+    Type: String
+    Default: c7g.large
+    Description: Each run's dista workers (a worker runs one task at a time)
+  Workers:
+    Type: String
+    Default: "0..4"
+    Description: Workers per run, MIN..MAX; the scheduler scales each run between them
   AllowedRunTypes:
     Type: CommaDelimitedList
     Default: "c7g.large,c7g.xlarge,c7g.2xlarge,c7g.4xlarge"
@@ -38,7 +46,7 @@ Parameters:
   VcpuBudget:
     Type: Number
     Default: 16
-    Description: The most vCPUs all runs together may hold (ORCA_VCPU_BUDGET); 16 is 8 c7g.large
+    Description: The most vCPUs all runs together may hold, heads and workers (ORCA_VCPU_BUDGET); 16 is 8 c7g.large
   Ami:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ecs/optimized-ami/amazon-linux-2023/arm64/recommended/image_id
@@ -123,6 +131,9 @@ Resources:
       LifecycleConfiguration:
         Rules:
           - {Id: logs, Status: Enabled, Prefix: logs/, ExpirationInDays: 30}
+          # Converted logs, which a run's workers read; fetch converts again
+          # from the public bucket once one has expired.
+          - {Id: work, Status: Enabled, Prefix: work/, ExpirationInDays: 14}
   Repository:
     Type: AWS::ECR::Repository
     Properties:
@@ -307,13 +318,15 @@ Resources:
             ORCA_EC2_SECURITY_GROUP=${RunGroup}
             ORCA_EC2_PROFILE=${RunProfile}
             ORCA_EC2_HEAD_TYPE=${RunInstanceType}
+            ORCA_EC2_WORKER_TYPE=${WorkerInstanceType}
             ORCA_EC2_PREAMBLE=$login
             ORCA_VCPU_BUDGET=${VcpuBudget}
             ORCA_WAREHOUSE=s3://${Bucket}/warehouse
             ORCA_LOGS=s3://${Bucket}/logs
             ORCA_LOG_STAGE=/var/lib/refinery/stage
-            ORCA_RUN_ENV=AV2_VIEWS,AV2_PREFIX
+            ORCA_RUN_ENV=AV2_VIEWS,AV2_PREFIX,AV2_WORK
             AV2_VIEWS=s3://${Bucket}/views/av2
+            AV2_WORK=s3://${Bucket}/work/av2
             AV2_PREFIX=sensor/val
             ORCA_UI_ADDR=0.0.0.0:8270
             ORCA_UI_LOGIN=required
@@ -325,7 +338,7 @@ Resources:
             # instances pull the same image), then ticks.
             docker run -d --name scheduler --restart always --network refinery --env-file /etc/refinery.env \
               -v /var/lib/refinery/stage:/var/lib/refinery/stage --entrypoint /bin/sh $image -c \
-              "orca register --image $image /opt/orca/pipelines/av2-pipeline-a && exec orca scheduler"
+              "orca register --image $image --workers ${Workers} /opt/orca/pipelines/av2-pipeline-a && exec orca scheduler"
             docker run -d --name ui --restart always --network refinery --env-file /etc/refinery.env \
               -v /var/lib/refinery/stage:/var/lib/refinery/stage $image ui
             docker run -d --name viewer --restart always --network refinery --env-file /etc/refinery.env \

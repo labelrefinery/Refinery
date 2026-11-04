@@ -429,12 +429,17 @@ pixi run -e orca ./build/av2-pipeline-a run --partitions 02678d04-cc9f-3148-9f95
 ```
 
 `src/av2_pipeline_a.mojo` is five steps. `fetch` downloads a log and lays it out
-as a work directory (`refinery.av2_fetch`; a converted log is kept). `label`
-runs `run_geometry` on it and appends the tracks to `av2.tracks_a`. `view`
+as a work directory (`refinery.av2_fetch`; a converted log is kept), and with
+`AV2_WORK=s3://...` uploads it there for the run's workers (`refinery.workdir`
+mirrors what each machine reads). `label` runs the geometry on the run's dista
+workers (`run_geometry_tasks`, `ORCA_WORKERS` processes locally) and appends
+the tracks to `labelrefinery.labels` as the dataset `av2/<log>`. `view`
 publishes the log's view bundle (`refinery.av2_view`: poses, annotations,
 tracks, and each sweep's points as int16 centimetres) to `AV2_VIEWS`, for the
 viewer. `score` matches the tracks to the log's annotations (`refinery.av2`)
-and appends a row to `av2.scores_a`. `summary` gathers the run's scores. The
+and appends a row to `av2.scores_a`, and its metrics to
+`labelrefinery.evaluations` naming the labels snapshot it scored. `summary`
+gathers the run's scores. The
 partitions are the `log_id` column of `av2.logs` (orca's keyed partitions),
 five logs per run and at most eight runs at once; add logs to the list and run
 `av2-logs` again to extend it. `configs/av2_val.txt` lists all 150 val logs.

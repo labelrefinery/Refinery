@@ -8,8 +8,8 @@ and that terminate themselves when the run ends.
 | | What | Always on? |
 |---|---|---|
 | **Control instance** (t4g.large) | Postgres, orca's scheduler and orca ui, the AV2 slice viewer, LabelControl (read-only), Caddy with Let's Encrypt in front | yes, about $55 a month with its disk and address |
-| **Run instances** (c7g.large, one per run) | `av2-pipeline-a resume <run>`: fetch 5 logs from the public bucket, label, publish view bundles, score | only during a run, by the second |
-| **Bucket** `refinery-<account>-us-east-2` | `warehouse/` (av2.logs, av2.tracks_a, av2.scores_a), `logs/` (30 days), `views/av2/` (the viewer's bundles, about 65 MB a log) | storage only |
+| **Run instances**: a head (c7g.large) per run, and 0 to 4 workers (c7g.large, `Workers`) | the head runs `av2-pipeline-a resume <run>`: fetch 5 logs from the public bucket, label, publish view bundles, score; the workers run the labeling's dista tasks (a terrain task and a detect task per sweep), started when tasks wait and drained when idle | only during a run, by the second |
+| **Bucket** `refinery-<account>-us-east-2` | `warehouse/` (av2.logs, av2.scores_a, labelrefinery.labels, labelrefinery.evaluations), `work/av2/` (converted logs, which the workers read; 14 days), `logs/` (30 days), `views/av2/` (the viewer's bundles, about 65 MB a log) | storage only |
 | **Repository** `refinery` | the image (`deploy/Dockerfile`): orca, the pipeline, the viewer, LabelControl | storage only |
 
 The URLs, from the stack's outputs, use the Elastic IP's
@@ -45,8 +45,10 @@ sudo docker exec scheduler orca backfill av2_pipeline_a @all
 
 The backfill can also be started from orca ui once logged in. Each run shows
 there as it goes; its instance appears in EC2 as `orca-<run>-<start>-head`
-and is gone when the run ends. Scores land in `av2.scores_a` and the viewer
-lists each log as soon as it's scored.
+and is gone when the run ends, as are its workers, `orca-<run>-<start>-worker`.
+Labels land in `labelrefinery.labels` (dataset `av2/<log>`), scores in
+`av2.scores_a` and `labelrefinery.evaluations`, and the viewer lists each log
+as soon as it's scored.
 
 To show LabelControl's runs, copy an `ops.db` to
 `s3://<Bucket>/labelcontrol/ops.db` before the stack starts the control
