@@ -5,8 +5,11 @@ corrected labels, that correction is a claim about the data and deserves to
 survive the next run — which is the whole argument in `docs/DATASETS.md`, and
 the reason a reviewed file becomes a dataset rather than staying a file.
 
-The schema comes from `refinery.datasets`, which is its single definition, so
-the shape written here cannot drift from the shape the registry claims. The columns a
+The schema comes from `refinery.datasets`, which is its single definition.
+`labels_batch` turns a CSV into rows of it; `publish_labels` appends them
+outside orca, for the Restate loop until it moves, and
+`refinery.lake.publish_labels` appends them from an orca step, which is what
+records who made the snapshot and from what. The columns a
 tracker CSV cannot supply — `part`, `num_lidar_points`, `producer_version`,
 `ontology_version` — are written null rather than invented. `producer` and
 `run_id` are filled in, because the point of promoting a reviewed file is
@@ -17,14 +20,10 @@ from iceberg.batch import ColumnBuilder, Datum, batch_of
 from iceberg.catalog.filesystem import FilesystemCatalog, Table
 from iceberg.schema import Schema
 
-from refinery.datasets import (
-    LABELS_SCHEMA_JSON,
-    NAMESPACE,
-    kind_table,
-    register,
-)
 from iceberg.types import P_DOUBLE, P_INT, P_LONG, P_STRING
-from std.os.path import exists
+from parquet import RecordBatch
+
+from refinery.datasets import LABELS_SCHEMA_JSON, NAMESPACE, kind_table
 
 
 
@@ -67,17 +66,28 @@ def _num(row: List[String], col: Int) raises -> Datum:
     return Datum.double_(Float64(raw))
 
 
-def publish_labels(
+struct LabelsBatch(Movable):
+    """A tracker CSV as rows of the labels schema."""
+
+    var batch: RecordBatch
+    var rows: Int
+
+    def __init__(out self, var batch: RecordBatch, rows: Int):
+        self.batch = batch^
+        self.rows = rows
+
+    def into_batch(deinit self) -> RecordBatch:
+        return self.batch^
+
+
+def labels_batch(
     labels_path: String,
-    warehouse: String,
     dataset_name: String,
     run_id: String,
     producer: String = "human_review",
-    version: String = "0.1.0",
-    parents: List[String] = List[String](),
-    created_at: String = "",
-) raises -> PublishMetrics:
-    """Append `labels_path` to the `labelrefinery.labels` table as a new snapshot."""
+) raises -> LabelsBatch:
+    """The rows of a tracker CSV as one batch of `LABELS_SCHEMA_JSON`, and how
+    many there are."""
     var handle = open(labels_path, "r")
     var text = handle.read()
     handle.close()
@@ -182,47 +192,45 @@ def publish_labels(
         ]
     )
 
+    return LabelsBatch(batch^, len(rows))
+
+
+def publish_labels(
+    labels_path: String,
+    warehouse: String,
+    dataset_name: String,
+    run_id: String,
+    producer: String = "human_review",
+) raises -> PublishMetrics:
+    """Append `labels_path` to the `labelrefinery.labels` table as a new
+    snapshot, outside orca: nothing records who made it."""
+    var built = labels_batch(labels_path, dataset_name, run_id, producer)
     var catalog = FilesystemCatalog.local(warehouse)
-    var schema = Schema.parse(LABELS_SCHEMA_JSON)
     var target = kind_table("labels")
 
     var table: Table
     if catalog.table_exists(NAMESPACE, target):
         table = catalog.load_table(NAMESPACE, target)
     else:
-        table = catalog.create_table(NAMESPACE, target, schema)
+        table = catalog.create_table(
+            NAMESPACE, target, Schema.parse(LABELS_SCHEMA_JSON)
+        )
 
     var tx = table.new_append()
-    tx.add(batch)
+    var rows = built.rows
+    tx.add(built^.into_batch())
     _ = tx.commit()
 
     # Re-load: the commit writes a new metadata file, and the in-memory table
     # still holds the pre-commit one, whose current-snapshot-id is -1.
     var committed = catalog.load_table(NAMESPACE, target)
     var snapshot = committed.metadata.current_snapshot_id
-    # Registering is the half that makes it a *dataset* rather than an append:
-    # (name, version) pinned to this snapshot, so the rows resolve identically
-    # forever even after later writes to the same table.
-    _ = register(
-        catalog,
-        dataset_name,
-        version,
-        String("labels"),
-        Int(snapshot),
-        len(rows),
-        parents.copy(),
-        producer,
-        String(""),
-        String("{}"),
-        created_at,
-    )
-
     print(
         "published",
-        len(rows),
+        rows,
         "rows to",
         NAMESPACE + "." + target,
         "snapshot",
         snapshot,
     )
-    return PublishMetrics(len(rows), Int(snapshot), warehouse)
+    return PublishMetrics(rows, Int(snapshot), warehouse)

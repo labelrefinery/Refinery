@@ -44,7 +44,7 @@ test-filter = { cmd = "mojo run -I src test/test_filter.mojo", description = "La
 test-router = { cmd = "mojo run -I src test/test_router.mojo", description = "Router and stage table tests" }
 test-review = { cmd = "mojo run -I src test/test_review.mojo", description = "Reviewer edit application tests" }
 test-publish = { cmd = "mojo run -I src test/test_publish.mojo", description = "Iceberg publish tests" }
-test-datasets = { cmd = "mojo run -I src test/test_datasets.mojo", description = "Dataset registry tests" }
+test-datasets = { cmd = "mojo run -I src test/test_datasets.mojo", description = "Kind tables and evaluation rows" }
 test-trainconfig = { cmd = "mojo run -I src test/test_trainconfig.mojo", description = "Training config generation tests" }
 test-stages = { cmd = "mojo run -I src test/test_stages.mojo", description = "Pipeline stage edge cases" }
 test-av2 = { cmd = "mojo run -I src test/test_av2.mojo", description = "AV2 scoring and the drive-sized terrain grid" }
@@ -91,6 +91,7 @@ AV2_ROOT = "runs/av2"
 [feature.orca.tasks]
 build-av2-logs = { cmd = "mkdir -p build && mojo build -I src $DEP_INC src/av2_logs.mojo -o build/av2-logs", description = "Build the av2.logs writer" }
 av2-logs = { cmd = "./build/av2-logs $ORCA_WAREHOUSE configs/av2_sample.txt", depends-on = ["build-av2-logs"], description = "Write av2.logs from configs/av2_sample.txt" }
+test-lake = { cmd = "mojo run -I src $DEP_INC test/test_lake.mojo", description = "Labels and evaluations written from an orca step" }
 test-av2-view = { cmd = "mojo run -I src $DEP_INC test/test_av2_view.mojo", description = "The AV2 view bundle and the viewer's path checks" }
 build-orca = { cmd = "mkdir -p build && mojo build $DEP_INC ../../magmalake/orca.mojo/bin/scheduler.mojo -o build/orca", description = "Build orca's scheduler and UI binary from the sibling checkout" }
 build-labelcontrol = { cmd = "mkdir -p build && mojo build -I ../LabelControl/src $DEP_INC ../LabelControl/src/server.mojo -o build/labelcontrol", description = "Build LabelControl's site from the sibling checkout" }

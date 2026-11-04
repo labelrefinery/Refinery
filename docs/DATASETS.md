@@ -174,37 +174,43 @@ schema migration.
 
 ## Layout on magmalake
 
-One Iceberg table per kind, partitioned by dataset name; a registry maps
-`(name, version)` to a table snapshot.
+One Iceberg table per kind, partitioned by dataset name. A dataset's version
+is the snapshot that committed it, and orca records who made each snapshot.
 
 ```
 magmalake                              catalog
 └── labelrefinery                      namespace
-    ├── datasets                       the registry
     ├── scenes
     ├── ground_truth_tracks            partitioned by (dataset_name, day(t))
     ├── ground_truth_views             partitioned by (dataset_name, camera)
     ├── ground_truth_points            partitioned by (dataset_name)
     ├── prompts
     ├── labels                         partitioned by (dataset_name)
-    └── evaluations
+    └── evaluations                    partitioned by (dataset_name)
 ```
 
-The registry is the only new concept:
+**No registry table.** An earlier version of this design had one, mapping
+`(name, version)` to a snapshot with its parents, producer, code version and
+params. Every one of those is something orca already records for each commit an
+orca step makes (`refinery.lake` is the writer), in the snapshot's own summary
+and in its state database:
 
-| column | type | |
-| --- | --- | --- |
-| `name`, `version` | string | the identity |
-| `kind` | string | scene / ground_truth / prompt / labels / evaluation |
-| `table`, `snapshot_id` | string, long | where the rows are, **pinned** |
-| `parents` | list<string> | `name@version`, the lineage edges |
-| `produced_by` | string | workflow name |
-| `producer_version` | string | git sha |
-| `params` | map<string,string> | what the workflow was called with |
-| `row_count` | long | |
-| `created_at` | timestamp | |
+| was a registry column | now |
+| --- | --- |
+| `name` | the `dataset_name` column, which the table is partitioned by |
+| `version`, `snapshot_id` | the snapshot itself |
+| `parents` | `orca.reads`: the `table@snapshot` pairs the step read |
+| `produced_by` | `orca.pipeline`, `orca.step`, `orca.run` |
+| `producer_version` | `orca.code`, the pipeline's registry hash |
+| `params` | the run's partition (`orca.partition`) and the step's recorded input |
+| `row_count` | the snapshot summary's `added-records` |
 
-Resolving a dataset is one lookup and one snapshot-pinned scan:
+`orca lineage labelrefinery.labels <snapshot>` walks it back to the scenes and
+forward to every evaluation. A second copy would only be a second thing to
+disagree. Where a row has to name another version, as an evaluation names the
+predictions and ground truth it scored, it writes `<table>@<snapshot>`.
+
+Reading a version is one snapshot-pinned scan:
 
 ```sql
 SELECT * FROM labelrefinery.labels
@@ -219,22 +225,7 @@ does not survive a rewrite.
 
 **Why one table per kind rather than one per dataset.** A table per dataset
 means thousands of tables and a catalog nobody can list. Partitioning by
-`dataset_name` gives the same pruning with one schema to evolve, and the
-registry restores the named-thing addressing on top.
-
-Write lineage into `snapshot_properties` as well as the registry — belt and
-braces, and it means a snapshot is self-describing to anything reading the table
-directly:
-
-```python
-df.write_iceberg(table, snapshot_properties={
-    "dataset_name": "site_seed1.round2",
-    "dataset_version": "0.3.0",
-    "parents": json.dumps([...]),
-    "produced_by": "improve_offboard_model",
-    "producer_version": GIT_SHA,
-})
-```
+`dataset_name` gives the same pruning with one schema to evolve.
 
 ---
 
@@ -293,13 +284,9 @@ The current CSVs already carry the right columns; they are missing identity.
 2. A new `sitegen views` export → `ground_truth.views`, from the instance masks.
 3. `name_instances.py`'s output → `labels`, its `cls_source` / `cls_conf`
    already present.
-4. `RunContext`'s manifest → the registry. It already records inputs, outputs,
-   params and hashes per step; a dataset version is that record with a name
-   attached.
-
-Step 4 is the one to notice: the workflows already produce lineage, into a JSON
-file per run. This design does not add provenance tracking, it moves what exists
-somewhere queryable.
+4. `RunContext`'s manifest → orca's lineage. It records inputs, outputs, params
+   and hashes per step, into a JSON file per run; as orca steps, the same facts
+   land in orca's state and on each snapshot, where they can be queried.
 
 ---
 

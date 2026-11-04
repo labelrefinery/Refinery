@@ -1,13 +1,20 @@
 from iceberg.catalog.filesystem import FilesystemCatalog
 from refinery.datasets import (
-    join_parents,
+    EvalRow,
+    dataset,
     kind_table,
-    register,
-    split_parents,
+    version_ref,
+    write_evaluation,
 )
 from std.os import makedirs
 from std.os.path import exists
-from std.testing import assert_equal, assert_true, assert_raises, TestSuite
+from std.testing import (
+    TestSuite,
+    assert_equal,
+    assert_false,
+    assert_raises,
+    assert_true,
+)
 
 comptime TMP = "/private/tmp/claude-501/-Volumes-ExtNVMe-dev-labelrefinery/52a63f46-5e24-45f5-801b-0e8f9c0fda9c/scratchpad/dstest"
 
@@ -30,47 +37,33 @@ def test_unknown_kind_is_an_error() raises:
         _ = kind_table("nonsense")
 
 
-def test_parents_roundtrip() raises:
-    var p = List[String]()
-    p.append("a@1")
-    p.append("b@2")
-    var back = split_parents(join_parents(p))
-    assert_equal(len(back), 2)
-    assert_equal(back[0], "a@1")
-    assert_equal(back[1], "b@2")
+def test_dataset_names_the_kind_table() raises:
+    assert_equal(dataset("labels"), "labelrefinery.labels")
+    assert_equal(dataset("evaluation"), "labelrefinery.evaluations")
 
 
-def test_empty_parents_roundtrip() raises:
-    assert_equal(len(split_parents("")), 0)
-    assert_equal(join_parents(List[String]()), "")
-
-
-def test_register_records_the_pin() raises:
-    var d = _fresh("reg1")
-    var cat = FilesystemCatalog.local(d)
-    var parents = List[String]()
-    parents.append("site.round1@0.1.0")
-    var entry = register(
-        cat, "site.round2", "0.2.0", "labels", 12345, 60, parents,
-        "improve_offboard_model", "sha1", '{"k":"v"}', "2026-09-01T00:00:00Z",
+def test_version_ref() raises:
+    assert_equal(
+        version_ref("labelrefinery.labels", 4417), "labelrefinery.labels@4417"
     )
-    assert_equal(entry.ref(), "site.round2@0.2.0")
-    assert_equal(entry.table, "labels")
-    assert_equal(entry.snapshot_id, 12345)
-    assert_equal(entry.row_count, 60)
-    assert_equal(len(entry.parents), 1)
-    assert_true(exists(d + "/labelrefinery/datasets/metadata/version-hint.text"))
 
 
-def test_registering_twice_keeps_both_versions() raises:
-    var d = _fresh("reg2")
+def test_write_evaluation_appends_a_snapshot() raises:
+    var d = _fresh("eval1")
     var cat = FilesystemCatalog.local(d)
-    var none = List[String]()
-    _ = register(cat, "s", "0.1.0", "labels", 1, 1, none, "p", "", "{}", "t1")
-    _ = register(cat, "s", "0.2.0", "labels", 2, 2, none, "p", "", "{}", "t2")
-    # versions are immutable: a second register appends, never updates
-    var tbl = cat.load_table("labelrefinery", "datasets")
-    assert_true(tbl.metadata.current_snapshot_id != 0)
+    var rows = List[EvalRow]()
+    rows.append(EvalRow(String("all"), String("recall"), 0.65))
+    rows.append(EvalRow(String("all"), String("precision"), 0.42))
+    var first = write_evaluation(
+        cat, "s", rows, "labelrefinery.labels@1", "", "score", "run-1"
+    )
+    var second = write_evaluation(
+        cat, "s", rows, "labelrefinery.labels@2", "", "score", "run-2"
+    )
+    assert_true(first > 0)
+    assert_true(first != second)
+    assert_true(exists(d + "/labelrefinery/evaluations/metadata/version-hint.text"))
+    assert_false(exists(d + "/labelrefinery/datasets"))
 
 
 def main() raises:
