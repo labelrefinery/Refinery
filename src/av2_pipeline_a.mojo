@@ -8,30 +8,39 @@
 The partitions are the `log_id`s of the warehouse dataset `av2.logs`
 (`orca.keyed`), many per run. Per log:
 
-1. **fetch** downloads the log from the public bucket and converts it to a
-   work directory (`refinery.av2_fetch`); a log already converted is kept.
-2. **label** runs Pipeline A on it (`run_geometry` with no proprioception and a
-   terrain grid fitted to the drive) and appends its tracks to `av2.tracks_a`.
+1. **fetch** downloads the log from the public bucket, converts it to a
+   work directory (`refinery.av2_fetch`) and, when `AV2_WORK` is in object
+   storage, uploads it there; a log already converted is kept.
+2. **label** runs Pipeline A on it on the run's dista workers
+   (`refinery.sweeps.run_geometry_tasks`: one terrain task, a detect task per
+   sweep, with no proprioception and a terrain grid fitted to the drive) and
+   appends its tracks to `labelrefinery.labels` as the dataset `av2/<log>`.
 3. **view** publishes the log's view bundle (`refinery.av2_view`) to
    `AV2_VIEWS`, which the slice viewer reads: the work directory is on an
    instance that's gone once the run ends.
 4. **score** matches the tracks to the log's annotations (`refinery.av2`) and
-   appends the result to `av2.scores_a`.
+   appends the result to `av2.scores_a`, which the slice viewer lists, and its
+   recall, precision floor and centre error to `labelrefinery.evaluations`,
+   naming the labels snapshot it scored (`labelrefinery.labels@<snapshot>`).
 
 Then **summary** adds up the run's scores. Each commit carries orca's lineage
-properties, so `orca lineage av2.scores_a` says which run, code and tracks
+properties, so `orca lineage av2.scores_a` says which run, code and labels
 snapshot a score came from.
 
-Environment: `ORCA_WAREHOUSE` (the Iceberg warehouse), `AV2_ROOT` (work
-directories, the download cache and fetch logs; default `runs/av2`),
+Environment: `ORCA_WAREHOUSE` (the Iceberg warehouse), `AV2_ROOT` (the
+download cache; default `runs/av2`), `AV2_WORK` (work directories, a directory
+or `s3://...`; default `<AV2_ROOT>/work`; workers on other machines need a URI
+they can all read, see `refinery.workdir`, which mirrors it under
+`REFINERY_CACHE`),
 `AV2_PREFIX` (the split under `datasets/av2/`; default `sensor/val`, whose
 logs are annotated) and `AV2_VIEWS` (where view bundles go, a directory or
 `s3://...`; default `<AV2_ROOT>/views`).
 
 Runs: `keys_per_run` logs each, at most `max_runs` at once. With orca's `ec2`
-runner each run is one instance of its own (the pipeline calls no dista
-tasks), so a backfill of the val split's 150 logs is 30 runs, 8 instances at
-a time.
+runner each run is a head instance, which runs the steps, and the workers it
+was registered with (`orca register --workers 0..4 ...`), which run the
+geometry's tasks; locally the workers are `ORCA_WORKERS` processes. A dista
+worker runs one task at a time, so a worker instance of 2 vCPUs is enough.
 """
 
 from std.os import getenv
@@ -49,27 +58,13 @@ from orca.tables import append, ensure_table
 from refinery.av2 import score_log
 from refinery.av2_fetch import fetch_log
 from refinery.av2_view import publish_view
-from refinery.io import read_csv_rows
-from refinery.stages import run_geometry
+from refinery.datasets import EvalRow, version_ref
+from refinery.lake import EVALUATIONS, LABELS, publish_labels, write_evaluation
+from refinery.sweeps import GeometryTasks, run_geometry_tasks
+from refinery.workdir import WorkDir
 
-comptime TRACKS = "av2.tracks_a"
 comptime SCORES = "av2.scores_a"
-
-comptime TRACKS_SCHEMA = (
-    '{"schema-id":0,"type":"struct","fields":['
-    '{"id":1,"name":"log_id","required":true,"type":"string"},'
-    '{"id":2,"name":"track_id","required":true,"type":"long"},'
-    '{"id":3,"name":"t","required":true,"type":"double"},'
-    '{"id":4,"name":"x","required":true,"type":"double"},'
-    '{"id":5,"name":"y","required":true,"type":"double"},'
-    '{"id":6,"name":"z","required":true,"type":"double"},'
-    '{"id":7,"name":"w","required":true,"type":"double"},'
-    '{"id":8,"name":"l","required":true,"type":"double"},'
-    '{"id":9,"name":"h","required":true,"type":"double"},'
-    '{"id":10,"name":"vx","required":true,"type":"double"},'
-    '{"id":11,"name":"vy","required":true,"type":"double"},'
-    '{"id":12,"name":"theta","required":true,"type":"double"}]}'
-)
+comptime PRODUCER = "pipeline_a"
 
 comptime SCORES_SCHEMA = (
     '{"schema-id":0,"type":"struct","fields":['
@@ -84,6 +79,7 @@ comptime SCORES_SCHEMA = (
     '{"id":9,"name":"label_seconds","required":true,"type":"double"},'
     '{"id":10,"name":"tracks_snapshot","required":true,"type":"long"}]}'
 )
+"""`tracks_snapshot` is the `labelrefinery.labels` snapshot the row scored."""
 
 
 def _env(name: StaticString, fallback: StaticString) -> String:
@@ -121,44 +117,62 @@ struct Scored(Copyable, Movable):
     var seconds: Float64
 
 
+def _dataset(log: Name) -> String:
+    """The log's labels' `dataset_name`."""
+    return String("av2/", log.text)
+
+
 def fetch(mut ctx: Ctx, log: Name) raises -> Fetched:
-    """Downloads and converts one log, unless it's already converted."""
+    """Downloads and converts one log, unless it's already converted, and
+    publishes the work directory where every worker reads it."""
     var root = _env("AV2_ROOT", "runs/av2")
-    var work = String(root, "/work/", log.text)
-    if exists(work + "/meta.json"):
-        ctx.log(String(log, ": already converted in ", work))
-    else:
+    var base = getenv("AV2_WORK")
+    if not base:
+        base = String(root, "/work")
+    var wd = WorkDir(String(base.rstrip("/"), "/", log.text))
+    if wd.has("meta.json"):
+        ctx.log(String(log, ": already converted in ", wd.uri))
+        return Fetched(log.copy(), wd.uri)
+    if not exists(wd.local + "/meta.json"):
         var meta = fetch_log(
             log.text,
-            work,
+            wd.local,
             prefix=_env("AV2_PREFIX", "sensor/val"),
             cache=String(root, "/cache"),
         )
-        ctx.log(String(log, ": ", meta, " -> ", work))
-    return Fetched(log.copy(), work^)
+        ctx.log(String(log, ": ", meta, " -> ", wd.local))
+    if wd.remote():
+        var t0 = perf_counter_ns()
+        wd.publish()
+        ctx.log(
+            String(
+                log,
+                ": published to ",
+                wd.uri,
+                " in ",
+                Float64(perf_counter_ns() - t0) / 1e9,
+                " s",
+            )
+        )
+    return Fetched(log.copy(), wd.uri)
 
 
 def label(mut ctx: Ctx, f: Fetched) raises -> Labeled:
-    """Pipeline A on one log; its tracks go to `av2.tracks_a`."""
-    var out = f.work + "/tracks.csv"
+    """Pipeline A on one log, on the run's workers; its tracks go to
+    `labelrefinery.labels` and beside the work directory's sweeps."""
+    var wd = WorkDir(f.work)
+    var out = wd.local + "/tracks.csv"
     var t0 = perf_counter_ns()
-    var m = run_geometry(
-        f.work, out, proprioception=False, fit_terrain_to_drive=True
+    var m = run_geometry_tasks(
+        ctx.runtime[GeometryTasks](),
+        wd.uri,
+        out,
+        proprioception=False,
+        fit_terrain_to_drive=True,
     )
     var seconds = Float64(perf_counter_ns() - t0) / 1e9
-
-    var schema = Schema.parse(TRACKS_SCHEMA)
-    var cols = List[ColumnBuilder]()
-    for id in range(1, 13):
-        cols.append(ColumnBuilder.of(schema, id))
-    for r in read_csv_rows(out):
-        # track_id,cls,t,x,y,z,w,l,h,vx,vy,theta,conf
-        cols[0].add(Datum.string_(f.log.text))
-        cols[1].add(Datum.long_(Int64(Int(r[0]))))
-        for c in range(2, 12):
-            cols[c].add(Datum.double_(Float64(r[c])))
-    var table = ensure_table(ctx, TRACKS, schema)
-    var snap = append(ctx, table, [batch_of(cols)])
+    wd.put(["tracks.csv"])
+    var snap = publish_labels(ctx, out, _dataset(f.log), PRODUCER)
     ctx.log(
         String(
             f.log,
@@ -190,7 +204,9 @@ def view(mut ctx: Ctx, l: Labeled) raises -> Labeled:
     if not root:
         root = String(_env("AV2_ROOT", "runs/av2"), "/views")
     var t0 = perf_counter_ns()
-    var n = publish_view(l.work, l.log.text, root)
+    var wd = WorkDir(l.work)
+    wd.mirror()
+    var n = publish_view(wd.local, l.log.text, root)
     ctx.log(
         String(
             l.log,
@@ -207,10 +223,13 @@ def view(mut ctx: Ctx, l: Labeled) raises -> Labeled:
 
 
 def score(mut ctx: Ctx, l: Labeled) raises -> Scored:
-    """The log's tracks against its annotations; one row of `av2.scores_a`."""
-    if not exists(l.work + "/annotations.csv"):
+    """The log's tracks against its annotations: one row of `av2.scores_a`,
+    and the metrics in `labelrefinery.evaluations`."""
+    var wd = WorkDir(l.work)
+    if not wd.has("annotations.csv"):
         raise Error(l.log.text + " has no annotations to score against")
-    var s = score_log(l.work, l.work + "/tracks.csv")
+    wd.mirror()
+    var s = score_log(wd.local, wd.local + "/tracks.csv")
     var schema = Schema.parse(SCORES_SCHEMA)
     var cols = List[ColumnBuilder]()
     for id in range(1, 11):
@@ -227,6 +246,15 @@ def score(mut ctx: Ctx, l: Labeled) raises -> Scored:
     cols[9].add(Datum.long_(l.snapshot))
     var table = ensure_table(ctx, SCORES, schema)
     _ = append(ctx, table, [batch_of(cols)])
+    var rows: List[EvalRow] = [
+        EvalRow(String("all"), String("recall"), s.recall()),
+        EvalRow(String("movable"), String("recall"), s.movable_recall()),
+        EvalRow(String("all"), String("precision_floor"), s.precision()),
+        EvalRow(String("all"), String("center_error_m"), s.center_error_m),
+    ]
+    _ = write_evaluation(
+        ctx, _dataset(l.log), rows, version_ref(LABELS, l.snapshot), ""
+    )
     ctx.log(String(l.log, ": ", s))
     return Scored(
         l.log.copy(),
@@ -280,11 +308,17 @@ def summary(mut ctx: Ctx, scores: Seq[Scored]) raises -> Int:
 
 comptime Fetch = Step["fetch", Name, Fetched, fetch, Mapped, retries=2]
 comptime Label = Step[
-    "label", Fetched, Labeled, label, Mapped, after=Fetch, writes=[TRACKS]
+    "label", Fetched, Labeled, label, Mapped, after=Fetch, writes=[LABELS]
 ]
 comptime View = Step["view", Labeled, Labeled, view, Mapped, after=Label]
 comptime Score = Step[
-    "score", Labeled, Scored, score, Mapped, after=View, writes=[SCORES]
+    "score",
+    Labeled,
+    Scored,
+    score,
+    Mapped,
+    after=View,
+    writes=[SCORES, EVALUATIONS],
 ]
 comptime Summary = Step[
     "summary", Seq[Scored], Int, summary, Gather, after=Score
@@ -300,6 +334,7 @@ comptime Av2PipelineA = Pipeline[
     partitions=Keyed["av2.logs", "log_id"],
     keys_per_run=5,
     max_runs=8,
+    tasks=GeometryTasks,
 ]
 
 

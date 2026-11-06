@@ -5,8 +5,9 @@ per sweep (`refinery.sweeps`).
         [--terrain on|off] [--proprioception on|off] [--fit-terrain on|off]
 
 It forks a dista head and `--workers` workers on this machine (default 4),
-or with `DISTA_HEAD` set joins that cluster, whose workers must see
-`work_dir`. Its output is byte for byte what `refinery` writes for the same
+or with `DISTA_HEAD` set joins that cluster. `work_dir` is a directory every
+worker sees, or a URI (`s3://...`, `file://...`) each one mirrors what it reads
+from (`refinery.workdir`). Its output is byte for byte what `refinery` writes for the same
 arguments, which `test/geometry_tasks.sh` checks.
 """
 

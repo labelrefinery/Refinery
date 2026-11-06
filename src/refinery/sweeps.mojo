@@ -14,9 +14,11 @@ Both tasks call `refinery.geometry`, as `refinery.stages.run_geometry` does
 one sweep after another, and the driver merges detections in frame order, so
 `run_geometry_tasks` writes the bytes `run_geometry` writes.
 
-Each task reads its sweeps from the work directory, so the head and workers
-need to see it: one machine, or a shared path. Only this module imports dista,
-so only the `orca` environment builds it.
+The work directory may be a URI (`refinery.workdir`): workers on other
+machines then download what their task reads into a local mirror, the terrain
+task every sweep and a detect task its one. Jobs carry the URI; a task points
+its job at the mirror before reading. Only the `orca` environment builds this
+module, for dista and objectstore.
 """
 
 from std.time import perf_counter_ns
@@ -27,6 +29,7 @@ from orca import Tasks
 from stone import CellPatch, GridSpec
 
 from refinery.geometry import (
+    Geometry,
     SweepJob,
     detect_sweep,
     lift,
@@ -42,6 +45,7 @@ from refinery.stages import (
     run_tracking,
 )
 from refinery.terrain import TerrainModel
+from refinery.workdir import WorkDir
 
 
 # -- what the tasks take and return ------------------------------------------
@@ -191,16 +195,48 @@ struct Detections(Codec, Copyable, Movable):
 # -- the tasks ---------------------------------------------------------------
 
 
+def _jobs(
+    wd: WorkDir,
+    proprioception: Bool,
+    fit_terrain_to_drive: Bool,
+    use_terrain: Bool,
+) raises -> Geometry:
+    """`sweep_jobs` over the work directory's mirror (its poses and index
+    downloaded), with each job naming the work directory itself."""
+    var rels: List[String] = ["tf.csv", "sweeps/index.csv"]
+    if proprioception:
+        rels.append("joints.csv")
+    wd.get(rels)
+    var geo = sweep_jobs(
+        wd.local, proprioception, fit_terrain_to_drive, use_terrain
+    )
+    for i in range(len(geo.jobs)):
+        geo.jobs[i].work = wd.uri
+    return geo^
+
+
+def _mirrored(job: SweepJob) raises -> SweepJob:
+    """The job, its sweep downloaded and read from this machine's mirror."""
+    var wd = WorkDir(job.work)
+    wd.get([String("sweeps/", job.file)])
+    var out = job.copy()
+    out.work = wd.local
+    return out^
+
+
 def grow_terrain_task(job: TerrainJob) raises -> Terrain:
     """Lifts every sweep of the work directory and grows the terrain."""
-    var geo = sweep_jobs(
-        job.work, job.proprioception, job.fit_terrain_to_drive, True
-    )
+    var wd = WorkDir(job.work)
+    var geo = _jobs(wd, job.proprioception, job.fit_terrain_to_drive, True)
+    var sweeps = List[String](capacity=len(geo.jobs))
+    for i in range(len(geo.jobs)):
+        sweeps.append(String("sweeps/", geo.jobs[i].file))
+    wd.get(sweeps)
     var patches = List[CellPatch](capacity=len(geo.jobs))
     var total = 0
     var ego = 0
     for f in range(len(geo.jobs)):
-        var lifted = lift(geo.jobs[f])
+        var lifted = lift(_mirrored(geo.jobs[f]))
         total += lifted.total_points
         ego += lifted.ego_points
         patches.append(lifted^.into_patch())
@@ -209,7 +245,7 @@ def grow_terrain_task(job: TerrainJob) raises -> Terrain:
 
 def detect_sweep_task(job: SweepJob, terrain: Seq[Terrain]) raises -> Detections:
     """Detects in one sweep against the terrain (the one result in `terrain`)."""
-    return Detections(detect_sweep(job, terrain[0].model))
+    return Detections(detect_sweep(_mirrored(job), terrain[0].model))
 
 
 comptime GrowTerrain = Task[TerrainJob, Terrain, grow_terrain_task]
@@ -233,10 +269,11 @@ def run_geometry_tasks(
     fit_terrain_to_drive: Bool = False,
 ) raises -> StageMetrics:
     """`refinery.stages.run_geometry` on the run's dista workers: the same
-    arguments, the same tracker CSV."""
+    arguments, the same tracker CSV. `work` may be a URI (see the module);
+    `out_path` is local."""
     var metrics = StageMetrics.empty()
-    var geo = sweep_jobs(
-        work, proprioception, fit_terrain_to_drive, use_terrain
+    var geo = _jobs(
+        WorkDir(work), proprioception, fit_terrain_to_drive, use_terrain
     )
     metrics.frames = len(geo.jobs)
     print(
